@@ -1,19 +1,24 @@
 run:
   timeout: 5m
-  # Allow linting code that targets a newer Go version than the linter binary
-  go: "1.23"
 
 linters:
+  disable-all: true
   enable:
     - errcheck
-    - govet
     - ineffassign
     - staticcheck
     - unused
     - gosimple
+    - govet
+    # Note: typecheck is intentionally excluded — the build step (go build ./...)
+    # already catches type errors. golangci-lint's bundled Go version may be older
+    # than the module's required Go version, causing false typecheck failures.
 
 issues:
   exclude-rules:
-    # Ignore error from defer Rollback (intentional pattern)
+    # Ignore unchecked errors on defer Rollback/Close/Quit — intentional pattern
     - text: "Error return value of .*(Rollback|Close|Quit).*is not checked"
+      linters: [errcheck]
+    # Ignore nolint comments in generated/vendor code
+    - path: vendor/
       linters: [errcheck]

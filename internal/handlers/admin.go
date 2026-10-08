@@ -138,17 +138,18 @@ func AdminListSlotsHandler(db *sql.DB) http.HandlerFunc {
 		defer rows.Close()
 
 		type slotRow struct {
-			models.Slot
-			Booking *adminBookingSummary `json:"booking,omitempty"`
+			ID       int64                `json:"id"`
+			StartsAt time.Time            `json:"starts_at"`
+			Booking  *adminBookingSummary `json:"booking,omitempty"`
 		}
 
 		result := make([]slotRow, 0)
 		for rows.Next() {
 			var sr slotRow
 			var startsStr string
-			var bID sql.NullInt64
-			var bName, bEmail, bTreat, bStatus sql.NullString
-			var bDur sql.NullInt64
+			var bID                              sql.NullInt64
+			var bName, bEmail, bTreat, bStatus  sql.NullString
+			var bDur                             sql.NullInt64
 
 			if err := rows.Scan(
 				&sr.ID, &startsStr,
