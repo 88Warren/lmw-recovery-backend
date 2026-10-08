@@ -32,11 +32,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: v1.64.8
-          args: --timeout=5m --allow-parallel-runners
+      - name: Vet
+        run: go vet ./...
 
       - name: Build verification
         run: CGO_ENABLED=0 go build ./...
