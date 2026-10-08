@@ -56,12 +56,19 @@ jobs:
             ${{ env.IMAGE_NAME }}:latest
 
       # ── 6. Deploy to VPS via SSH ──────────────────────────────────────────────
+      - name: Test VPS connectivity
+        run: |
+          echo "Testing TCP connectivity to VPS..."
+          nc -zv ${{ secrets.VPS_HOST }} 22 || echo "Port 22 unreachable from GitHub Actions"
+          curl -s --max-time 5 http://${{ secrets.VPS_HOST }} && echo "HTTP reachable" || echo "HTTP not reachable (expected)"
+
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
           host:     ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           password: ${{ secrets.VPS_PASSWORD }}
+          debug:    true
           script: |
             helm upgrade ${{ env.HELM_RELEASE }} ${{ env.HELM_CHART_PATH }} \
               --namespace ${{ env.HELM_NAMESPACE }} \
