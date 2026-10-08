@@ -61,7 +61,7 @@ jobs:
         with:
           host:     ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
-          password: ${{ secrets.VPS_PASSWORD }}
+          key:      ${{ secrets.VPS_SSH_KEY }}
           script: |
             helm upgrade ${{ env.HELM_RELEASE }} ${{ env.HELM_CHART_PATH }} \
               --namespace ${{ env.HELM_NAMESPACE }} \
