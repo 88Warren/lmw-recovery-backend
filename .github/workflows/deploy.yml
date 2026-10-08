@@ -8,16 +8,49 @@ on:
 
 # ── Repo-specific config ─────────────────────────────────────────────────────
 env:
-  IMAGE_NAME:       lmwcode/lmw-recovery-backend
-  HELM_RELEASE:     lmwrecovery-backend
-  HELM_NAMESPACE:   lmw-recovery
-  HELM_CHART_PATH:  /opt/lmwrecovery/lmwrecovery-helmcharts/backend
-  HELM_IMAGE_KEY:   api.image.tag
+  IMAGE_NAME:      lmwcode/lmw-recovery-backend
+  HELM_RELEASE:    lmwrecovery-backend
+  HELM_NAMESPACE:  lmw-recovery
+  HELM_CHART_PATH: /opt/lmwrecovery/lmwrecovery-helmcharts/backend
+  HELM_IMAGE_KEY:  api.image.tag
+  HEALTH_URL:      https://api.lmwrecovery.co.uk/health
 
 jobs:
-  build-and-deploy:
-    name: Build → Push → Deploy
+  # ────────────────────────────────────────────────────────────────────────────
+  # JOB 1 — Quality checks (lint + build)
+  # ────────────────────────────────────────────────────────────────────────────
+  check:
+    name: Lint & Build Check
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+      - name: Build verification
+        run: CGO_ENABLED=0 go build ./...
+
+      - name: Run tests
+        run: go test ./... -v -timeout 60s
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # JOB 2 — Build image, scan, deploy (only if checks pass)
+  # ────────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Build → Scan → Push → Deploy
+    runs-on: ubuntu-latest
+    needs: check
 
     steps:
       # ── 1. Checkout ──────────────────────────────────────────────────────────
@@ -43,7 +76,27 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
-      # ── 5. Build & push multi-arch image ─────────────────────────────────────
+      # ── 5. Build image locally for scanning (single arch, no push yet) ────────
+      - name: Build image for scan
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:scan
+
+      # ── 6. Security scan with Trivy ───────────────────────────────────────────
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:scan
+          format: table
+          exit-code: '1'
+          severity: CRITICAL
+          ignore-unfixed: true
+
+      # ── 7. Build & push multi-arch image ─────────────────────────────────────
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
@@ -55,28 +108,39 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.VERSION }}
             ${{ env.IMAGE_NAME }}:latest
 
-      # ── 6. Deploy to VPS via SSH ──────────────────────────────────────────────
-      - name: Test VPS connectivity
-        run: |
-          echo "Testing TCP connectivity to VPS..."
-          nc -zv ${{ secrets.VPS_HOST }} 22 || echo "Port 22 unreachable from GitHub Actions"
-          curl -s --max-time 5 http://${{ secrets.VPS_HOST }} && echo "HTTP reachable" || echo "HTTP not reachable (expected)"
-
+      # ── 8. Deploy to VPS via SSH ──────────────────────────────────────────────
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
           host:     ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key:      ${{ secrets.VPS_SSH_KEY }}
-          debug:    true
           script: |
             helm upgrade ${{ env.HELM_RELEASE }} ${{ env.HELM_CHART_PATH }} \
               --namespace ${{ env.HELM_NAMESPACE }} \
               --set ${{ env.HELM_IMAGE_KEY }}=${{ steps.tag.outputs.VERSION }} \
               --reuse-values
 
-      # ── 7. Summary ───────────────────────────────────────────────────────────
+      # ── 9. Post-deploy health check ───────────────────────────────────────────
+      - name: Wait for rollout
+        run: sleep 20
+
+      - name: Health check
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 ${{ env.HEALTH_URL }})
+          echo "Health check status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "❌ Health check failed — API returned HTTP $STATUS"
+            exit 1
+          fi
+          echo "✅ Health check passed"
+
+      # ── 10. Summary ───────────────────────────────────────────────────────────
       - name: Summary
         run: |
           echo "### ✅ Deployed ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.VERSION }}" >> $GITHUB_STEP_SUMMARY
-          echo "Namespace: \`${{ env.HELM_NAMESPACE }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "| | |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Namespace | \`${{ env.HELM_NAMESPACE }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.VERSION }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Health | ✅ |" >> $GITHUB_STEP_SUMMARY
