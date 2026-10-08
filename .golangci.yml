@@ -1,0 +1,19 @@
+run:
+  timeout: 5m
+  # Allow linting code that targets a newer Go version than the linter binary
+  go: "1.23"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gosimple
+
+issues:
+  exclude-rules:
+    # Ignore error from defer Rollback (intentional pattern)
+    - text: "Error return value of .*(Rollback|Close|Quit).*is not checked"
+      linters: [errcheck]
