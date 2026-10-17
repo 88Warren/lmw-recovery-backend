@@ -152,51 +152,55 @@ func (d BookingConfirmationData) What3WordsClean() string {
 var bookingConfirmationTmpl = template.Must(template.New("booking_confirm").Parse(`
 <!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8"></head>
-<body style="font-family:'Montserrat',Helvetica,sans-serif;background:#171717;color:#F4F0EB;margin:0;padding:0;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#171717;">
+<head>
+  <meta charset="UTF-8">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light">
+</head>
+<body style="font-family:'Montserrat',Helvetica,sans-serif;background:#f4f0eb;color:#2a2622;margin:0;padding:0;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f0eb;">
     <tr><td align="center" style="padding:40px 20px;">
-      <table width="560" cellpadding="0" cellspacing="0" style="background:#1c1c1c;border-top:3px solid #C9A15B;">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-top:3px solid #C9A15B;">
         <tr><td style="padding:40px 40px 20px;">
-          <p style="font-size:11px;letter-spacing:0.3em;text-transform:uppercase;color:#C9A15B;margin:0 0 16px;">LMW Recovery</p>
-          <h1 style="font-family:Georgia,serif;font-size:28px;font-weight:400;color:#F4F0EB;margin:0 0 24px;line-height:1.2;">
+          <p style="font-size:11px;letter-spacing:0.3em;text-transform:uppercase;color:#b8904a;margin:0 0 16px;">LMW Recovery</p>
+          <h1 style="font-family:Georgia,serif;font-size:28px;font-weight:400;color:#2a2622;margin:0 0 24px;line-height:1.2;">
             You're booked in, {{.ClientName}}.
           </h1>
-          <p style="font-size:13px;color:#B8AEA0;line-height:1.8;margin:0 0 32px;">
+          <p style="font-size:13px;color:#555150;line-height:1.8;margin:0 0 32px;">
             Your session has been received and is now confirmed. Here are the details:
           </p>
-          <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid rgba(201,161,91,0.2);margin-bottom:32px;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #e7ddc9;margin-bottom:32px;">
             <tr>
-              <td style="padding:12px 0;border-bottom:1px solid rgba(201,161,91,0.12);font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#C9A15B;width:140px;">Treatment</td>
-              <td style="padding:12px 0;border-bottom:1px solid rgba(201,161,91,0.12);font-size:13px;color:#F4F0EB;">{{.Treatment}}</td>
+              <td style="padding:12px 0;border-bottom:1px solid #efe8da;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#b8904a;width:140px;">Treatment</td>
+              <td style="padding:12px 0;border-bottom:1px solid #efe8da;font-size:13px;color:#2a2622;">{{.Treatment}}</td>
             </tr>
             <tr>
-              <td style="padding:12px 0;border-bottom:1px solid rgba(201,161,91,0.12);font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#C9A15B;">Date &amp; Time</td>
-              <td style="padding:12px 0;border-bottom:1px solid rgba(201,161,91,0.12);font-size:13px;color:#F4F0EB;">{{.LocalStartsAt}}</td>
+              <td style="padding:12px 0;border-bottom:1px solid #efe8da;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#b8904a;">Date &amp; Time</td>
+              <td style="padding:12px 0;border-bottom:1px solid #efe8da;font-size:13px;color:#2a2622;">{{.LocalStartsAt}}</td>
             </tr>
             <tr>
-              <td style="padding:12px 0;border-bottom:1px solid rgba(201,161,91,0.12);font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#C9A15B;vertical-align:top;">Location</td>
-              <td style="padding:12px 0;border-bottom:1px solid rgba(201,161,91,0.12);font-size:13px;color:#F4F0EB;">
+              <td style="padding:12px 0;border-bottom:1px solid #efe8da;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#b8904a;vertical-align:top;">Location</td>
+              <td style="padding:12px 0;border-bottom:1px solid #efe8da;font-size:13px;color:#2a2622;">
                 Private studio, Llantrisant RCT
-                {{if .StudioAddress}}<br><span style="color:#B8AEA0;font-size:12px;line-height:1.6;">{{.StudioAddress}}</span>{{else}}<br><span style="color:#78736C;font-size:11px;">Full address sent separately.</span>{{end}}
-                {{with .What3WordsClean}}<br><span style="color:#78736C;font-size:11px;">what3words: <a href="https://what3words.com/{{.}}" style="color:#C9A15B;text-decoration:none;">///{{.}}</a></span>{{end}}
+                {{if .StudioAddress}}<br><span style="color:#555150;font-size:12px;line-height:1.6;">{{.StudioAddress}}</span>{{else}}<br><span style="color:#8a8178;font-size:11px;">Full address sent separately.</span>{{end}}
+                {{with .What3WordsClean}}<br><span style="color:#8a8178;font-size:11px;">what3words: <a href="https://what3words.com/{{.}}" style="color:#b8904a;text-decoration:none;">///{{.}}</a></span>{{end}}
               </td>
             </tr>
             {{if .Notes}}
             <tr>
-              <td style="padding:12px 0;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#C9A15B;">Your Notes</td>
-              <td style="padding:12px 0;font-size:13px;color:#B8AEA0;">{{.Notes}}</td>
+              <td style="padding:12px 0;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#b8904a;">Your Notes</td>
+              <td style="padding:12px 0;font-size:13px;color:#555150;">{{.Notes}}</td>
             </tr>
             {{end}}
           </table>
-          <p style="font-size:12px;color:#78736C;line-height:1.8;margin:0 0 16px;">
+          <p style="font-size:12px;color:#8a8178;line-height:1.8;margin:0 0 16px;">
             You'll receive a separate email with a short health questionnaire — please complete it before your session. If you need to cancel or rearrange, just reply to this email or contact me directly.
           </p>
-          <p style="font-size:12px;color:#78736C;line-height:1.8;margin:0 0 40px;">
+          <p style="font-size:12px;color:#8a8178;line-height:1.8;margin:0 0 40px;">
             See you soon,<br>
-            <span style="color:#C9A15B;">Laura</span>
+            <span style="color:#b8904a;">Laura</span>
           </p>
-          <p style="font-size:10px;color:#3a3a3a;margin:0;">
+          <p style="font-size:10px;color:#b3a99c;margin:0;">
             LMW Recovery · Llantrisant, RCT · hello@lmwrecovery.co.uk
           </p>
         </td></tr>
@@ -270,20 +274,25 @@ var contactNotificationTmpl = template.Must(template.New("contact_notify").Parse
 var contactAckTmpl = template.Must(template.New("contact_ack").Parse(`
 <!DOCTYPE html>
 <html>
-<body style="font-family:'Montserrat',Helvetica,sans-serif;background:#171717;color:#F4F0EB;margin:0;padding:0;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#171717;">
+<head>
+  <meta charset="UTF-8">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light">
+</head>
+<body style="font-family:'Montserrat',Helvetica,sans-serif;background:#f4f0eb;color:#2a2622;margin:0;padding:0;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f0eb;">
     <tr><td align="center" style="padding:40px 20px;">
-      <table width="560" cellpadding="0" cellspacing="0" style="background:#1c1c1c;border-top:3px solid #C9A15B;">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-top:3px solid #C9A15B;">
         <tr><td style="padding:40px;">
-          <p style="font-size:11px;letter-spacing:0.3em;text-transform:uppercase;color:#C9A15B;margin:0 0 16px;">LMW Recovery</p>
-          <h1 style="font-family:Georgia,serif;font-size:26px;font-weight:400;color:#F4F0EB;margin:0 0 20px;">Thanks, {{.Name}}.</h1>
-          <p style="font-size:13px;color:#B8AEA0;line-height:1.8;margin:0 0 24px;">
+          <p style="font-size:11px;letter-spacing:0.3em;text-transform:uppercase;color:#b8904a;margin:0 0 16px;">LMW Recovery</p>
+          <h1 style="font-family:Georgia,serif;font-size:26px;font-weight:400;color:#2a2622;margin:0 0 20px;">Thanks, {{.Name}}.</h1>
+          <p style="font-size:13px;color:#555150;line-height:1.8;margin:0 0 24px;">
             I've received your message and will get back to you as soon as possible — usually within 24 hours.
           </p>
-          <p style="font-size:12px;color:#78736C;line-height:1.8;margin:0 0 40px;">
-            Laura<br><span style="color:#C9A15B;">LMW Recovery</span>
+          <p style="font-size:12px;color:#8a8178;line-height:1.8;margin:0 0 40px;">
+            Laura<br><span style="color:#b8904a;">LMW Recovery</span>
           </p>
-          <p style="font-size:10px;color:#3a3a3a;margin:0;">hello@lmwrecovery.co.uk · lmwrecovery.co.uk</p>
+          <p style="font-size:10px;color:#b3a99c;margin:0;">hello@lmwrecovery.co.uk · lmwrecovery.co.uk</p>
         </td></tr>
       </table>
     </td></tr>
