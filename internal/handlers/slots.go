@@ -10,31 +10,41 @@ import (
 	"lmwrecovery/backend/internal/models"
 )
 
+// maxFreeMinutes caps the reported free_minutes for a slot. No treatment is
+// longer than an hour, so there is no need to report larger gaps; capping keeps
+// the number meaningful ("plenty of time") rather than reflecting the distance
+// to a booking days away.
+const maxFreeMinutes = 120
+
 // SlotsHandler handles GET /api/slots
 //
 // Query params:
 //
 //	date     = YYYY-MM-DD  (optional) filter to a single calendar day
-//	duration = minutes     (optional, default 60) treatment duration in minutes
+//	duration = minutes     (optional) if set, only slots with at least this many
+//	                        free minutes are returned; otherwise every slot in the
+//	                        window is returned.
 //
-// Returns all start times that have no overlapping confirmed/pending booking
-// for a window of [starts_at, starts_at + duration).
+// Every returned slot carries free_minutes: the number of minutes free starting
+// at that slot before the next confirmed/pending booking begins (capped at
+// maxFreeMinutes). free_minutes == 0 means the start time itself is already
+// taken. This lets the UI show taken/partial slots instead of hiding them.
 //
-// Overlap condition:
-//
-//	An existing booking blocks a candidate start time S with duration D if:
-//	  booking.starts_at < S + D   AND   S < booking.starts_at + booking.treatment_duration_minutes
+// A booking B (start BStart, duration BDur) occupies [BStart, BStart+BDur). A
+// candidate start S is blocked when S falls inside an existing booking; the free
+// window at S runs until the start of the earliest booking that begins at or
+// after S (bounded by maxFreeMinutes).
 func SlotsHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Parse duration (default 60)
-		durationMins := 60
+		// Optional minimum-duration filter.
+		minDuration := 0
 		if d := r.URL.Query().Get("duration"); d != "" {
 			v, err := strconv.Atoi(d)
 			if err != nil || v <= 0 {
 				jsonError(w, "duration must be a positive integer (minutes)", http.StatusBadRequest)
 				return
 			}
-			durationMins = v
+			minDuration = v
 		}
 
 		dateStr := r.URL.Query().Get("date")
@@ -85,6 +95,11 @@ func SlotsHandler(db *sql.DB) http.HandlerFunc {
 			s.startsAt, _ = time.Parse(time.RFC3339, startsStr)
 			raw = append(raw, s)
 		}
+		if err := rows.Err(); err != nil {
+			log.Printf("ERROR iterate slots: %v", err)
+			jsonError(w, "could not fetch slots", http.StatusInternalServerError)
+			return
+		}
 		rows.Close()
 
 		if len(raw) == 0 {
@@ -92,43 +107,82 @@ func SlotsHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// For each candidate slot check whether any confirmed/pending booking overlaps.
-		//
-		// A booking with start B and duration BD overlaps candidate start S with duration D when:
-		//   B < S+D  AND  S < B+BD
-		//
-		// We pass S and D as parameters; the DB computes S+D in seconds via datetime().
-		available := make([]models.Slot, 0, len(raw))
+		result := make([]models.Slot, 0, len(raw))
 		for _, s := range raw {
-			endsAt := s.startsAt.Add(time.Duration(durationMins) * time.Minute)
-
-			var conflicts int
-			err := db.QueryRow(`
-				SELECT COUNT(*) FROM bookings b
-				JOIN slots sl ON sl.id = b.slot_id
-				WHERE b.status IN ('confirmed','pending')
-				  AND datetime(sl.starts_at) < datetime(?)
-				  AND datetime(?) < datetime(sl.starts_at, '+' || b.treatment_duration_minutes || ' minutes')
-			`,
-				endsAt.Format(time.RFC3339),
-				s.startsAt.Format(time.RFC3339),
-			).Scan(&conflicts)
-
+			free, err := freeMinutesAt(db, s.startsAt)
 			if err != nil {
-				log.Printf("ERROR overlap check for slot %d: %v", s.id, err)
+				log.Printf("ERROR free-minutes check for slot %d: %v", s.id, err)
 				continue
 			}
-
-			if conflicts == 0 {
-				available = append(available, models.Slot{
-					ID:       s.id,
-					StartsAt: s.startsAt,
-				})
+			if minDuration > 0 && free < minDuration {
+				continue
 			}
+			result = append(result, models.Slot{
+				ID:          s.id,
+				StartsAt:    s.startsAt,
+				FreeMinutes: free,
+			})
 		}
 
-		jsonOK(w, available)
+		jsonOK(w, result)
 	}
+}
+
+// freeMinutesAt returns how many minutes are free starting at s before the next
+// confirmed/pending booking begins, capped at maxFreeMinutes.
+//
+//	0                        => the start time itself falls inside an existing booking
+//	1..maxFreeMinutes        => a limited gap (only shorter treatments fit)
+//	maxFreeMinutes           => effectively open
+func freeMinutesAt(db *sql.DB, s time.Time) (int, error) {
+	start := s.Format(time.RFC3339)
+
+	// 1) Is the start time itself inside an existing booking?
+	//    An existing booking B occupies [B.start, B.start + B.dur). S is taken
+	//    when B.start <= S < B.start + B.dur.
+	var covering int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM bookings b
+		JOIN slots sl ON sl.id = b.slot_id
+		WHERE b.status IN ('confirmed','pending')
+		  AND datetime(sl.starts_at) <= datetime(?)
+		  AND datetime(?) < datetime(sl.starts_at, '+' || b.treatment_duration_minutes || ' minutes')
+	`, start, start).Scan(&covering); err != nil {
+		return 0, err
+	}
+	if covering > 0 {
+		return 0, nil
+	}
+
+	// 2) Find the earliest booking that starts at or after S. The free window is
+	//    the gap between S and that booking's start.
+	var nextStartStr sql.NullString
+	if err := db.QueryRow(`
+		SELECT MIN(sl.starts_at) FROM bookings b
+		JOIN slots sl ON sl.id = b.slot_id
+		WHERE b.status IN ('confirmed','pending')
+		  AND datetime(sl.starts_at) >= datetime(?)
+	`, start).Scan(&nextStartStr); err != nil {
+		return 0, err
+	}
+
+	if !nextStartStr.Valid {
+		return maxFreeMinutes, nil // nothing booked ahead
+	}
+
+	nextStart, err := time.Parse(time.RFC3339, nextStartStr.String)
+	if err != nil {
+		return maxFreeMinutes, nil
+	}
+
+	gap := int(nextStart.Sub(s).Minutes())
+	if gap < 0 {
+		gap = 0
+	}
+	if gap > maxFreeMinutes {
+		gap = maxFreeMinutes
+	}
+	return gap, nil
 }
 
 // TreatmentsHandler handles GET /api/treatments
