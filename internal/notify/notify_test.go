@@ -71,7 +71,4 @@ func TestChannelsDisabledWithoutConfig(t *testing.T) {
 	if NewTelegram("", "").Enabled() {
 		t.Error("Telegram should be disabled without token/chatID")
 	}
-	if NewWhatsApp("", "").Enabled() {
-		t.Error("WhatsApp should be disabled without phone/apiKey")
-	}
 }

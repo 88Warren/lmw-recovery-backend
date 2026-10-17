@@ -49,11 +49,6 @@ type Config struct {
 	StudioAddress    string // full address, e.g. "12 Example St, Llantrisant, CF72 8XX"
 	StudioWhat3Words string // what3words address, e.g. "filled.count.soap" (with or without leading ///)
 
-	// WhatsApp booking notification via CallMeBot (free). When both are set, a
-	// WhatsApp message is sent to WhatsAppPhone on each new booking.
-	WhatsAppPhone  string // international format, e.g. "447700900000"
-	WhatsAppAPIKey string // CallMeBot API key
-
 	// Telegram booking notification (free, no limits). When both are set, a
 	// Telegram message is sent on each new booking.
 	TelegramBotToken string // token from @BotFather
@@ -99,8 +94,6 @@ func Load() (*Config, error) {
 		FrontendOrigin:   getEnv("FRONTEND_ORIGIN", "http://localhost:5173"),
 		StudioAddress:    getEnv("STUDIO_ADDRESS", ""),
 		StudioWhat3Words: getEnv("STUDIO_WHAT3WORDS", ""),
-		WhatsAppPhone:    getEnv("WHATSAPP_PHONE", ""),
-		WhatsAppAPIKey:   getEnv("WHATSAPP_API_KEY", ""),
 		TelegramBotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),
 		TelegramChatID:   getEnv("TELEGRAM_CHAT_ID", ""),
 	}

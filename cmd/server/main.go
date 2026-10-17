@@ -51,13 +51,11 @@ func main() {
 		cfg.MailDryRun,
 	)
 
-	// ── Owner booking notifications (optional, free channels) ──────────────────
-	// Telegram is recommended (free, no limits). WhatsApp via CallMeBot also
-	// works when that service has capacity. Any enabled channel receives the
-	// alert; all unconfigured channels are skipped.
+	// ── Owner booking notifications (optional, free) ───────────────────────────
+	// Telegram (free, no limits). When configured, each new booking also sends a
+	// Telegram alert on top of the email notification.
 	ownerNotifier := notify.NewMulti(
 		notify.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID),
-		notify.NewWhatsApp(cfg.WhatsAppPhone, cfg.WhatsAppAPIKey),
 	)
 	if ownerNotifier.Enabled() {
 		log.Printf("owner booking notifications enabled")

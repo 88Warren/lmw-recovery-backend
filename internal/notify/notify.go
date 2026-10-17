@@ -4,9 +4,10 @@
 // surfaced to the caller to log but never blocks a booking.
 //
 // Supported channels:
-//   - Telegram (free, no limits) — recommended. See telegram.go.
-//   - WhatsApp via CallMeBot (free, but the service is sometimes at capacity).
-//     See whatsapp.go.
+//   - Telegram (free, no limits). See telegram.go.
+//
+// The Notifier interface and Multi fan-out make it straightforward to add more
+// channels later without touching the handlers.
 package notify
 
 import (
