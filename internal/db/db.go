@@ -34,10 +34,160 @@ func Open(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
+	if err := reconcileSchema(conn); err != nil {
+		return nil, fmt.Errorf("reconcile schema: %w", err)
+	}
+
 	return conn, nil
 }
 
+// reconcileSchema brings the slots/bookings tables into the start-time-only
+// shape the application code expects, regardless of whether the database was
+// created fresh from migration 001 (legacy schema) or hand-patched earlier.
+//
+// It is idempotent: on an already-correct database it does nothing.
+//
+// Two drifts are repaired:
+//  1. slots still carries the legacy `ends_at`/`available` columns — the
+//     scheduler inserts start-time-only rows, so `ends_at NOT NULL` makes
+//     seeding fail. We rebuild slots to (id, starts_at UNIQUE).
+//  2. bookings is missing `treatment_duration_minutes` — the overlap queries
+//     reference it. We add it with a sensible default (60) while preserving
+//     any existing values.
+func reconcileSchema(conn *sql.DB) error {
+	// ── bookings.treatment_duration_minutes ─────────────────────────────────
+	hasDuration, err := columnExists(conn, "bookings", "treatment_duration_minutes")
+	if err != nil {
+		return err
+	}
+	if !hasDuration {
+		if _, err := conn.Exec(
+			`ALTER TABLE bookings ADD COLUMN treatment_duration_minutes INTEGER NOT NULL DEFAULT 60`,
+		); err != nil {
+			return fmt.Errorf("add bookings.treatment_duration_minutes: %w", err)
+		}
+		log.Printf("schema: added bookings.treatment_duration_minutes")
+	}
+
+	// ── slots start-time-only rebuild ────────────────────────────────────────
+	hasEndsAt, err := columnExists(conn, "slots", "ends_at")
+	if err != nil {
+		return err
+	}
+	hasAvailable, err := columnExists(conn, "slots", "available")
+	if err != nil {
+		return err
+	}
+	if !hasEndsAt && !hasAvailable {
+		return nil // already start-time-only
+	}
+
+	// Rebuild slots via the standard SQLite table-alter recipe: create new, copy,
+	// drop old, rename. Foreign-key enforcement must be disabled around a schema
+	// change like this (SQLite re-validates the bookings.slot_id reference when
+	// the referenced table is dropped/renamed). The PRAGMA cannot be changed
+	// inside a transaction, so it is toggled on the connection around the tx.
+	//
+	// We intentionally only copy existing rows — including any that are already
+	// orphaned by pre-existing data — rather than deleting them, so this repair
+	// never destroys data a human may still want to inspect.
+	if _, err := conn.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disable fks: %w", err)
+	}
+	defer func() {
+		if _, err := conn.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+			log.Printf("schema: WARNING failed to re-enable foreign_keys: %v", err)
+		}
+	}()
+
+	tx, err := conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	stmts := []string{
+		`CREATE TABLE slots_new (
+			id        INTEGER PRIMARY KEY AUTOINCREMENT,
+			starts_at DATETIME NOT NULL,
+			UNIQUE(starts_at)
+		)`,
+		`INSERT OR IGNORE INTO slots_new (id, starts_at) SELECT id, starts_at FROM slots`,
+		`DROP TABLE slots`,
+		`ALTER TABLE slots_new RENAME TO slots`,
+		`CREATE INDEX IF NOT EXISTS idx_slots_starts_at ON slots(starts_at)`,
+	}
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("rebuild slots: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit slots rebuild: %w", err)
+	}
+	log.Printf("schema: rebuilt slots as start-time-only")
+	return nil
+}
+
+// columnExists reports whether the given table has a column with the given name.
+func columnExists(conn *sql.DB, table, column string) (bool, error) {
+	rows, err := conn.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, fmt.Errorf("table_info(%s): %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notnull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return false, fmt.Errorf("scan table_info(%s): %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
 func migrate(conn *sql.DB) error {
+	// Track which migrations have already run so each file executes exactly once.
+	// Previously every file was Exec'd on every startup, which is only safe for
+	// idempotent CREATE TABLE IF NOT EXISTS scripts — a destructive/rewriting
+	// migration (e.g. rebuilding a table) would re-run on every boot.
+	if _, err := conn.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		name       TEXT PRIMARY KEY,
+		applied_at DATETIME DEFAULT (datetime('now'))
+	)`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+
+	applied := make(map[string]bool)
+	rows, err := conn.Query(`SELECT name FROM schema_migrations`)
+	if err != nil {
+		return fmt.Errorf("read schema_migrations: %w", err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan schema_migrations: %w", err)
+		}
+		applied[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate schema_migrations: %w", err)
+	}
+	rows.Close()
+
 	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
 		return fmt.Errorf("read migrations: %w", err)
@@ -52,14 +202,33 @@ func migrate(conn *sql.DB) error {
 		if e.IsDir() {
 			continue
 		}
-		data, err := migrationsFS.ReadFile("migrations/" + e.Name())
+		name := e.Name()
+		if applied[name] {
+			continue
+		}
+
+		data, err := migrationsFS.ReadFile("migrations/" + name)
 		if err != nil {
-			return fmt.Errorf("read %s: %w", e.Name(), err)
+			return fmt.Errorf("read %s: %w", name, err)
 		}
-		if _, err := conn.Exec(string(data)); err != nil {
-			return fmt.Errorf("exec %s: %w", e.Name(), err)
+
+		tx, err := conn.Begin()
+		if err != nil {
+			return fmt.Errorf("begin tx for %s: %w", name, err)
 		}
-		log.Printf("migration applied: %s", e.Name())
+		if _, err := tx.Exec(string(data)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("exec %s: %w", name, err)
+		}
+		if _, err := tx.Exec(`INSERT INTO schema_migrations (name) VALUES (?)`, name); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("record %s: %w", name, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit %s: %w", name, err)
+		}
+
+		log.Printf("migration applied: %s", name)
 	}
 	return nil
 }

@@ -1,3 +1,15 @@
 -- Migration 003: Rework slots to start-time-only, add treatment_duration_minutes to bookings.
--- Applied directly to the DB before server start. No-op on re-run.
+--
+-- This rework is performed in Go (see reconcileSchema in internal/db/db.go)
+-- rather than static SQL, because it must branch on the database's current
+-- shape:
+--   * a fresh production DB has the legacy schema from migration 001
+--     (slots.ends_at NOT NULL / slots.available, bookings WITHOUT
+--     treatment_duration_minutes), and
+--   * the hand-patched local dev DB already has treatment_duration_minutes with
+--     real data that must be preserved.
+--
+-- A single static SQL script cannot conditionally carry a column that may or
+-- may not exist, so the table rebuild lives in code. This file is intentionally
+-- a no-op; it exists only to keep the migration history contiguous.
 SELECT 1;

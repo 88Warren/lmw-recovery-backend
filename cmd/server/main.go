@@ -33,8 +33,11 @@ func main() {
 	defer database.Close()
 
 	// ── Seed default availability slots ──────────────────────────────────────
+	// A seeding failure means the booking page would render with zero slots,
+	// which is indistinguishable from "fully booked" to clients. Fail loudly on
+	// startup instead of serving an empty calendar.
 	if err := scheduler.SeedDefaultSlots(database); err != nil {
-		log.Printf("WARNING: slot seeding failed: %v", err)
+		log.Fatalf("slot seeding failed: %v", err)
 	}
 
 	// ── Mailer ────────────────────────────────────────────────────────────────
