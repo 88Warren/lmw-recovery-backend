@@ -15,6 +15,7 @@ import (
 	"lmwrecovery/backend/internal/handlers"
 	"lmwrecovery/backend/internal/mailer"
 	"lmwrecovery/backend/internal/middleware"
+	"lmwrecovery/backend/internal/notify"
 	"lmwrecovery/backend/internal/scheduler"
 )
 
@@ -50,6 +51,28 @@ func main() {
 		cfg.MailDryRun,
 	)
 
+	// ── Owner booking notifications (optional, free channels) ──────────────────
+	// Telegram is recommended (free, no limits). WhatsApp via CallMeBot also
+	// works when that service has capacity. Any enabled channel receives the
+	// alert; all unconfigured channels are skipped.
+	ownerNotifier := notify.NewMulti(
+		notify.NewTelegram(cfg.TelegramBotToken, cfg.TelegramChatID),
+		notify.NewWhatsApp(cfg.WhatsAppPhone, cfg.WhatsAppAPIKey),
+	)
+	if ownerNotifier.Enabled() {
+		log.Printf("owner booking notifications enabled")
+	}
+
+	bookingDeps := handlers.BookingDeps{
+		Mailer:           mail,
+		Notifier:         ownerNotifier,
+		NotifyTo:         cfg.EmailTo,
+		BrevoAPIKey:      cfg.BrevoAPIKey,
+		BrevoTemplateID:  cfg.BrevoTemplateID,
+		StudioAddress:    cfg.StudioAddress,
+		StudioWhat3Words: cfg.StudioWhat3Words,
+	}
+
 	// ── Public router ─────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
 
@@ -62,10 +85,10 @@ func main() {
 	mux.Handle("GET /api/slots", handlers.SlotsHandler(database))
 	mux.Handle("POST /api/contact", handlers.ContactHandler(database, mail, cfg.EmailTo, cfg.RecaptchaSecret))
 	mux.Handle("POST /api/bookings",
-		handlers.BookingHandler(database, mail, cfg.EmailTo, cfg.BrevoAPIKey, cfg.BrevoTemplateID),
+		handlers.BookingHandler(database, bookingDeps),
 	)
 	mux.Handle("POST /api/bookings/pair",
-		handlers.BookingPairHandler(database, mail, cfg.EmailTo, cfg.BrevoAPIKey, cfg.BrevoTemplateID),
+		handlers.BookingPairHandler(database, bookingDeps),
 	)
 
 	// ── Admin routes (all require Bearer token) ───────────────────────────────

@@ -26,7 +26,7 @@ type bookingPairRequest struct {
 // BookingPairHandler handles POST /api/bookings/pair
 // Books two slots atomically for the Maintenance Plan (2 sessions/month).
 // Uses the same overlap check as BookingHandler.
-func BookingPairHandler(db *sql.DB, m *mailer.Mailer, notifyTo, brevoAPIKey string, brevoTemplateID int) http.HandlerFunc {
+func BookingPairHandler(db *sql.DB, deps BookingDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req bookingPairRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -144,32 +144,48 @@ func BookingPairHandler(db *sql.DB, m *mailer.Mailer, notifyTo, brevoAPIKey stri
 		}
 
 		go func() {
+			// Times rendered in the studio's local timezone (slots are UTC).
+			session2Local := slots[1].StartsAt.In(studioLocation).Format("Monday 2 January 2006, 3:04pm")
+
 			notesExtra := req.Notes
 			if notesExtra != "" {
 				notesExtra += "\n"
 			}
-			notesExtra += "Session 2: " + slots[1].StartsAt.Format("Monday 2 January 2006, 15:04")
+			notesExtra += "Session 2: " + session2Local
 
-			if err := m.SendBookingConfirmation(req.ClientEmail, mailer.BookingConfirmationData{
-				ClientName: req.ClientName,
-				Treatment:  req.Treatment + " (2 sessions)",
-				StartsAt:   slots[0].StartsAt,
-				Notes:      notesExtra,
+			if err := deps.Mailer.SendBookingConfirmation(req.ClientEmail, mailer.BookingConfirmationData{
+				ClientName:       req.ClientName,
+				Treatment:        req.Treatment + " (2 sessions)",
+				StartsAt:         slots[0].StartsAt,
+				Notes:            notesExtra,
+				StudioAddress:    deps.StudioAddress,
+				StudioWhat3Words: deps.StudioWhat3Words,
 			}); err != nil {
 				log.Printf("ERROR send booking confirmation: %v", err)
 			}
-			if err := m.SendBookingNotification(notifyTo, mailer.BookingNotificationData{
+
+			s1 := slots[0].StartsAt.In(studioLocation).Format("Mon 2 Jan, 3:04pm")
+			s2 := slots[1].StartsAt.In(studioLocation).Format("Mon 2 Jan, 3:04pm")
+			if err := deps.Mailer.SendBookingNotification(deps.NotifyTo, mailer.BookingNotificationData{
 				ClientName:  req.ClientName,
 				ClientEmail: req.ClientEmail,
 				ClientPhone: req.ClientPhone,
 				Treatment:   req.Treatment + " (2 sessions)",
 				StartsAt:    slots[0].StartsAt,
-				Notes:       "Session 1: " + slots[0].StartsAt.Format("Mon 2 Jan, 15:04") + "\nSession 2: " + slots[1].StartsAt.Format("Mon 2 Jan, 15:04"),
+				Notes:       "Session 1: " + s1 + "\nSession 2: " + s2,
 			}); err != nil {
 				log.Printf("ERROR send booking notification: %v", err)
 			}
-			if brevoAPIKey != "" && brevoTemplateID > 0 {
-				if err := triggerBrevoQuestionnaire(brevoAPIKey, brevoTemplateID, bookings[0]); err != nil {
+
+			pairMsg := "New LMW Recovery booking (Maintenance Plan — 2 sessions)\n" +
+				req.ClientName + "\nSession 1: " + s1 + "\nSession 2: " + s2
+			if req.ClientPhone != "" {
+				pairMsg += "\n" + req.ClientPhone
+			}
+			deps.notifyOwner(pairMsg)
+
+			if deps.BrevoAPIKey != "" && deps.BrevoTemplateID > 0 {
+				if err := triggerBrevoQuestionnaire(deps.BrevoAPIKey, deps.BrevoTemplateID, bookings[0]); err != nil {
 					log.Printf("ERROR brevo questionnaire: %v", err)
 				} else {
 					for _, b := range bookings {

@@ -11,6 +11,23 @@ import (
 	"time"
 )
 
+// studioLocation is the timezone slots are displayed in. Slots are stored in
+// UTC, so every human-facing time must be converted to this zone before
+// formatting — otherwise a 9:00 BST slot (stored as 08:00Z) prints as 8am.
+var studioLocation = mustLoadLocation("Europe/London")
+
+func mustLoadLocation(name string) *time.Location {
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		log.Printf("mailer: WARNING could not load location %q, falling back to UTC: %v", name, err)
+		return time.UTC
+	}
+	return loc
+}
+
+// localTime converts a stored (UTC) time into the studio's local timezone.
+func localTime(t time.Time) time.Time { return t.In(studioLocation) }
+
 // Mailer sends email via Ionos SMTP (STARTTLS on port 587).
 type Mailer struct {
 	host     string
@@ -113,6 +130,23 @@ type BookingConfirmationData struct {
 	Treatment  string
 	StartsAt   time.Time
 	Notes      string
+
+	// Location details. When StudioAddress is empty the email falls back to the
+	// generic "full address sent separately" line.
+	StudioAddress    string
+	StudioWhat3Words string
+}
+
+// LocalStartsAt renders the booking start time in the studio's timezone. Used in
+// the template so a 9am BST slot (stored as 08:00Z) displays as 9am, not 8am.
+func (d BookingConfirmationData) LocalStartsAt() string {
+	return localTime(d.StartsAt).Format("Monday 2 January 2006, 3:04pm")
+}
+
+// What3WordsClean returns the w3w address without a leading "///" so the
+// template can render it consistently and build a map link.
+func (d BookingConfirmationData) What3WordsClean() string {
+	return strings.TrimPrefix(strings.TrimSpace(d.StudioWhat3Words), "///")
 }
 
 var bookingConfirmationTmpl = template.Must(template.New("booking_confirm").Parse(`
@@ -138,11 +172,15 @@ var bookingConfirmationTmpl = template.Must(template.New("booking_confirm").Pars
             </tr>
             <tr>
               <td style="padding:12px 0;border-bottom:1px solid rgba(201,161,91,0.12);font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#C9A15B;">Date &amp; Time</td>
-              <td style="padding:12px 0;border-bottom:1px solid rgba(201,161,91,0.12);font-size:13px;color:#F4F0EB;">{{.StartsAt.Format "Monday 2 January 2006, 3:04pm"}}</td>
+              <td style="padding:12px 0;border-bottom:1px solid rgba(201,161,91,0.12);font-size:13px;color:#F4F0EB;">{{.LocalStartsAt}}</td>
             </tr>
             <tr>
-              <td style="padding:12px 0;border-bottom:1px solid rgba(201,161,91,0.12);font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#C9A15B;">Location</td>
-              <td style="padding:12px 0;border-bottom:1px solid rgba(201,161,91,0.12);font-size:13px;color:#F4F0EB;">Private studio, Llantrisant RCT<br><span style="color:#78736C;font-size:11px;">Full address sent separately.</span></td>
+              <td style="padding:12px 0;border-bottom:1px solid rgba(201,161,91,0.12);font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#C9A15B;vertical-align:top;">Location</td>
+              <td style="padding:12px 0;border-bottom:1px solid rgba(201,161,91,0.12);font-size:13px;color:#F4F0EB;">
+                Private studio, Llantrisant RCT
+                {{if .StudioAddress}}<br><span style="color:#B8AEA0;font-size:12px;line-height:1.6;">{{.StudioAddress}}</span>{{else}}<br><span style="color:#78736C;font-size:11px;">Full address sent separately.</span>{{end}}
+                {{with .What3WordsClean}}<br><span style="color:#78736C;font-size:11px;">what3words: <a href="https://what3words.com/{{.}}" style="color:#C9A15B;text-decoration:none;">///{{.}}</a></span>{{end}}
+              </td>
             </tr>
             {{if .Notes}}
             <tr>
@@ -179,6 +217,11 @@ type BookingNotificationData struct {
 	Notes       string
 }
 
+// LocalStartsAt renders the booking start in the studio's timezone.
+func (d BookingNotificationData) LocalStartsAt() string {
+	return localTime(d.StartsAt).Format("Monday 2 January 2006, 3:04pm")
+}
+
 var bookingNotificationTmpl = template.Must(template.New("booking_notify").Parse(`
 <!DOCTYPE html>
 <html>
@@ -188,7 +231,7 @@ var bookingNotificationTmpl = template.Must(template.New("booking_notify").Parse
     <h2 style="font-family:Georgia,serif;font-size:22px;font-weight:400;margin:0 0 24px;">{{.ClientName}} has booked a session</h2>
     <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #e5e5e5;">
       <tr><td style="padding:10px 0;border-bottom:1px solid #f0f0f0;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#C9A15B;width:130px;">Treatment</td><td style="padding:10px 0;border-bottom:1px solid #f0f0f0;font-size:13px;">{{.Treatment}}</td></tr>
-      <tr><td style="padding:10px 0;border-bottom:1px solid #f0f0f0;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#C9A15B;">Date &amp; Time</td><td style="padding:10px 0;border-bottom:1px solid #f0f0f0;font-size:13px;">{{.StartsAt.Format "Monday 2 January 2006, 3:04pm"}}</td></tr>
+      <tr><td style="padding:10px 0;border-bottom:1px solid #f0f0f0;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#C9A15B;">Date &amp; Time</td><td style="padding:10px 0;border-bottom:1px solid #f0f0f0;font-size:13px;">{{.LocalStartsAt}}</td></tr>
       <tr><td style="padding:10px 0;border-bottom:1px solid #f0f0f0;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#C9A15B;">Email</td><td style="padding:10px 0;border-bottom:1px solid #f0f0f0;font-size:13px;"><a href="mailto:{{.ClientEmail}}">{{.ClientEmail}}</a></td></tr>
       <tr><td style="padding:10px 0;border-bottom:1px solid #f0f0f0;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#C9A15B;">Phone</td><td style="padding:10px 0;border-bottom:1px solid #f0f0f0;font-size:13px;">{{if .ClientPhone}}{{.ClientPhone}}{{else}}—{{end}}</td></tr>
       {{if .Notes}}<tr><td style="padding:10px 0;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#C9A15B;">Notes</td><td style="padding:10px 0;font-size:13px;color:#555;">{{.Notes}}</td></tr>{{end}}
@@ -258,7 +301,7 @@ func (m *Mailer) SendBookingConfirmation(to string, data BookingConfirmationData
 	}
 	return m.Send(Message{
 		To:      to,
-		Subject: fmt.Sprintf("Your LMW Recovery session — %s", data.StartsAt.Format("2 Jan 2006")),
+		Subject: fmt.Sprintf("Your LMW Recovery session — %s", localTime(data.StartsAt).Format("2 Jan 2006")),
 		HTML:    html,
 	})
 }
@@ -270,7 +313,7 @@ func (m *Mailer) SendBookingNotification(to string, data BookingNotificationData
 	}
 	return m.Send(Message{
 		To:      to,
-		Subject: fmt.Sprintf("New booking: %s — %s", data.ClientName, data.StartsAt.Format("2 Jan 3:04pm")),
+		Subject: fmt.Sprintf("New booking: %s — %s", data.ClientName, localTime(data.StartsAt).Format("2 Jan 3:04pm")),
 		HTML:    html,
 	})
 }

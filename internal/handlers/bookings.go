@@ -30,7 +30,7 @@ type bookingRequest struct {
 //
 //	A slot S with treatment duration D is free if no confirmed/pending booking B exists where
 //	B.starts_at < S.starts_at + D  AND  S.starts_at < B.starts_at + B.treatment_duration_minutes
-func BookingHandler(db *sql.DB, m *mailer.Mailer, notifyTo, brevoAPIKey string, brevoTemplateID int) http.HandlerFunc {
+func BookingHandler(db *sql.DB, deps BookingDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req bookingRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -134,15 +134,17 @@ func BookingHandler(db *sql.DB, m *mailer.Mailer, notifyTo, brevoAPIKey string, 
 		booking.Slot = &slot
 
 		go func() {
-			if err := m.SendBookingConfirmation(booking.ClientEmail, mailer.BookingConfirmationData{
-				ClientName: booking.ClientName,
-				Treatment:  booking.Treatment,
-				StartsAt:   slot.StartsAt,
-				Notes:      booking.Notes,
+			if err := deps.Mailer.SendBookingConfirmation(booking.ClientEmail, mailer.BookingConfirmationData{
+				ClientName:       booking.ClientName,
+				Treatment:        booking.Treatment,
+				StartsAt:         slot.StartsAt,
+				Notes:            booking.Notes,
+				StudioAddress:    deps.StudioAddress,
+				StudioWhat3Words: deps.StudioWhat3Words,
 			}); err != nil {
 				log.Printf("ERROR send booking confirmation: %v", err)
 			}
-			if err := m.SendBookingNotification(notifyTo, mailer.BookingNotificationData{
+			if err := deps.Mailer.SendBookingNotification(deps.NotifyTo, mailer.BookingNotificationData{
 				ClientName:  booking.ClientName,
 				ClientEmail: booking.ClientEmail,
 				ClientPhone: booking.ClientPhone,
@@ -152,8 +154,11 @@ func BookingHandler(db *sql.DB, m *mailer.Mailer, notifyTo, brevoAPIKey string, 
 			}); err != nil {
 				log.Printf("ERROR send booking notification: %v", err)
 			}
-			if brevoAPIKey != "" && brevoTemplateID > 0 {
-				if err := triggerBrevoQuestionnaire(brevoAPIKey, brevoTemplateID, booking); err != nil {
+			deps.notifyOwner(ownerBookingMessage(
+				booking.ClientName, booking.Treatment, slot.StartsAt, booking.ClientPhone,
+			))
+			if deps.BrevoAPIKey != "" && deps.BrevoTemplateID > 0 {
+				if err := triggerBrevoQuestionnaire(deps.BrevoAPIKey, deps.BrevoTemplateID, booking); err != nil {
 					log.Printf("ERROR brevo questionnaire: %v", err)
 				} else {
 					if _, err := db.Exec(`UPDATE bookings SET brevo_sent = 1 WHERE id = ?`, booking.ID); err != nil {

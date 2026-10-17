@@ -44,6 +44,20 @@ type Config struct {
 
 	// Frontend origin for CORS
 	FrontendOrigin string
+
+	// Studio location shown in the booking confirmation email.
+	StudioAddress    string // full address, e.g. "12 Example St, Llantrisant, CF72 8XX"
+	StudioWhat3Words string // what3words address, e.g. "filled.count.soap" (with or without leading ///)
+
+	// WhatsApp booking notification via CallMeBot (free). When both are set, a
+	// WhatsApp message is sent to WhatsAppPhone on each new booking.
+	WhatsAppPhone  string // international format, e.g. "447700900000"
+	WhatsAppAPIKey string // CallMeBot API key
+
+	// Telegram booking notification (free, no limits). When both are set, a
+	// Telegram message is sent on each new booking.
+	TelegramBotToken string // token from @BotFather
+	TelegramChatID   string // your chat ID (from getUpdates)
 }
 
 // Load reads the environment-specific .env file then falls back to any
@@ -71,18 +85,24 @@ func Load() (*Config, error) {
 	// os.IsNotExist is fine — production may rely on real env vars.
 
 	cfg := &Config{
-		Port:            getEnv("PORT", "8080"),
-		DBPath:          getEnv("DB_PATH", "./lmw.db"),
-		SMTPHost:        getEnv("SMTP_HOST", "smtp.ionos.co.uk"),
-		SMTPUser:        mustEnv("SMTP_USER"),
-		SMTPPassword:    mustEnv("SMTP_PASSWORD"),
-		EmailFrom:       getEnv("EMAIL_FROM", "LMW Recovery <hello@lmwrecovery.co.uk>"),
-		EmailTo:         getEnv("EMAIL_TO", "hello@lmwrecovery.co.uk"),
-		BrevoAPIKey:     getEnv("BREVO_API_KEY", ""),
-		AdminToken:      mustEnv("ADMIN_TOKEN"),
-		MailDryRun:      os.Getenv("MAIL_DRY_RUN") == "true",
-		RecaptchaSecret: getEnv("RECAPTCHA_SECRET", ""),
-		FrontendOrigin:  getEnv("FRONTEND_ORIGIN", "http://localhost:5173"),
+		Port:             getEnv("PORT", "8080"),
+		DBPath:           getEnv("DB_PATH", "./lmw.db"),
+		SMTPHost:         getEnv("SMTP_HOST", "smtp.ionos.co.uk"),
+		SMTPUser:         mustEnv("SMTP_USER"),
+		SMTPPassword:     mustEnv("SMTP_PASSWORD"),
+		EmailFrom:        getEnv("EMAIL_FROM", "LMW Recovery <hello@lmwrecovery.co.uk>"),
+		EmailTo:          getEnv("EMAIL_TO", "hello@lmwrecovery.co.uk"),
+		BrevoAPIKey:      getEnv("BREVO_API_KEY", ""),
+		AdminToken:       mustEnv("ADMIN_TOKEN"),
+		MailDryRun:       os.Getenv("MAIL_DRY_RUN") == "true",
+		RecaptchaSecret:  getEnv("RECAPTCHA_SECRET", ""),
+		FrontendOrigin:   getEnv("FRONTEND_ORIGIN", "http://localhost:5173"),
+		StudioAddress:    getEnv("STUDIO_ADDRESS", ""),
+		StudioWhat3Words: getEnv("STUDIO_WHAT3WORDS", ""),
+		WhatsAppPhone:    getEnv("WHATSAPP_PHONE", ""),
+		WhatsAppAPIKey:   getEnv("WHATSAPP_API_KEY", ""),
+		TelegramBotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),
+		TelegramChatID:   getEnv("TELEGRAM_CHAT_ID", ""),
 	}
 
 	// SMTP port
