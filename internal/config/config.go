@@ -21,7 +21,7 @@ type Config struct {
 	SMTPPort     int
 	SMTPUser     string // your full Ionos email address
 	SMTPPassword string
-	EmailFrom    string // display name + address, e.g. "LMW Recovery <hello@lmwrecovery.co.uk>"
+	EmailFrom    string // display name + address, e.g. "LMW Recovery <info@lmwrecovery.co.uk>"
 	EmailTo      string // where booking/contact notifications are sent (Laura's inbox)
 
 	// Brevo — health questionnaire automation
@@ -85,8 +85,8 @@ func Load() (*Config, error) {
 		SMTPHost:         getEnv("SMTP_HOST", "smtp.ionos.co.uk"),
 		SMTPUser:         mustEnv("SMTP_USER"),
 		SMTPPassword:     mustEnv("SMTP_PASSWORD"),
-		EmailFrom:        getEnv("EMAIL_FROM", "LMW Recovery <hello@lmwrecovery.co.uk>"),
-		EmailTo:          getEnv("EMAIL_TO", "hello@lmwrecovery.co.uk"),
+		EmailFrom:        getEnv("EMAIL_FROM", "LMW Recovery <info@lmwrecovery.co.uk>"),
+		EmailTo:          getEnv("EMAIL_TO", "info@lmwrecovery.co.uk"),
 		BrevoAPIKey:      getEnv("BREVO_API_KEY", ""),
 		AdminToken:       mustEnv("ADMIN_TOKEN"),
 		MailDryRun:       os.Getenv("MAIL_DRY_RUN") == "true",

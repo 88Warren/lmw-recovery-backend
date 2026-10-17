@@ -201,7 +201,7 @@ var bookingConfirmationTmpl = template.Must(template.New("booking_confirm").Pars
             <span style="color:#b8904a;">Laura</span>
           </p>
           <p style="font-size:10px;color:#b3a99c;margin:0;">
-            LMW Recovery · Llantrisant, RCT · hello@lmwrecovery.co.uk
+            LMW Recovery · Llantrisant, RCT · info@lmwrecovery.co.uk
           </p>
         </td></tr>
       </table>
@@ -292,7 +292,7 @@ var contactAckTmpl = template.Must(template.New("contact_ack").Parse(`
           <p style="font-size:12px;color:#8a8178;line-height:1.8;margin:0 0 40px;">
             Laura<br><span style="color:#b8904a;">LMW Recovery</span>
           </p>
-          <p style="font-size:10px;color:#b3a99c;margin:0;">hello@lmwrecovery.co.uk · lmwrecovery.co.uk</p>
+          <p style="font-size:10px;color:#b3a99c;margin:0;">info@lmwrecovery.co.uk · lmwrecovery.co.uk</p>
         </td></tr>
       </table>
     </td></tr>
