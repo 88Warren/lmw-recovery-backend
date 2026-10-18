@@ -30,8 +30,17 @@ type Config struct {
 	BrevoTemplateID int // transactional template ID for the health questionnaire
 
 	// Stripe
-	StripeSecretKey     string
-	StripeWebhookSecret string
+	StripeSecretKey     string // sk_test_… / sk_live_…
+	StripeWebhookSecret string // whsec_… signing secret for the webhook endpoint
+
+	// StripeMaintenancePriceID is the recurring Price (price_…) for the £80/month
+	// Maintenance Plan subscription, created in the Stripe product catalogue.
+	StripeMaintenancePriceID string
+
+	// PublicBaseURL is the client-facing site origin Stripe redirects back to
+	// after Checkout, e.g. https://www.lmwrecovery.co.uk. Used to build the
+	// success/cancel URLs. Falls back to FrontendOrigin when unset.
+	PublicBaseURL string
 
 	// reCAPTCHA v3
 	RecaptchaSecret string
@@ -96,6 +105,16 @@ func Load() (*Config, error) {
 		StudioWhat3Words: getEnv("STUDIO_WHAT3WORDS", ""),
 		TelegramBotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),
 		TelegramChatID:   getEnv("TELEGRAM_CHAT_ID", ""),
+
+		StripeSecretKey:          getEnv("STRIPE_SECRET_KEY", ""),
+		StripeWebhookSecret:      getEnv("STRIPE_WEBHOOK_SECRET", ""),
+		StripeMaintenancePriceID: getEnv("STRIPE_MAINTENANCE_PRICE_ID", ""),
+		PublicBaseURL:            getEnv("PUBLIC_BASE_URL", ""),
+	}
+
+	// Default the public base URL to the frontend origin when not set explicitly.
+	if cfg.PublicBaseURL == "" {
+		cfg.PublicBaseURL = cfg.FrontendOrigin
 	}
 
 	// SMTP port

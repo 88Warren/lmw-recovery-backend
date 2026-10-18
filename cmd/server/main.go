@@ -14,8 +14,10 @@ import (
 	"lmwrecovery/backend/internal/db"
 	"lmwrecovery/backend/internal/handlers"
 	"lmwrecovery/backend/internal/mailer"
+	"lmwrecovery/backend/internal/memberauth"
 	"lmwrecovery/backend/internal/middleware"
 	"lmwrecovery/backend/internal/notify"
+	"lmwrecovery/backend/internal/payments"
 	"lmwrecovery/backend/internal/scheduler"
 )
 
@@ -61,15 +63,33 @@ func main() {
 		log.Printf("owner booking notifications enabled")
 	}
 
-	bookingDeps := handlers.BookingDeps{
-		Mailer:           mail,
-		Notifier:         ownerNotifier,
-		NotifyTo:         cfg.EmailTo,
-		BrevoAPIKey:      cfg.BrevoAPIKey,
-		BrevoTemplateID:  cfg.BrevoTemplateID,
-		StudioAddress:    cfg.StudioAddress,
-		StudioWhat3Words: cfg.StudioWhat3Words,
+	// ── Payments (Stripe one-off Checkout) ─────────────────────────────────────
+	stripeSvc := payments.New(cfg.StripeSecretKey, cfg.StripeWebhookSecret)
+	if stripeSvc.Enabled() {
+		log.Printf("stripe payments enabled")
+	} else {
+		log.Printf("WARNING: stripe not configured — bookings cannot be paid for")
 	}
+
+	bookingDeps := handlers.BookingDeps{
+		Mailer:             mail,
+		Notifier:           ownerNotifier,
+		NotifyTo:           cfg.EmailTo,
+		BrevoAPIKey:        cfg.BrevoAPIKey,
+		BrevoTemplateID:    cfg.BrevoTemplateID,
+		StudioAddress:      cfg.StudioAddress,
+		StudioWhat3Words:   cfg.StudioWhat3Words,
+		Stripe:             stripeSvc,
+		PublicBaseURL:      cfg.PublicBaseURL,
+		MaintenancePriceID: cfg.StripeMaintenancePriceID,
+		// Reuse the admin token as the HMAC key for passwordless member links.
+		MemberSigner: memberauth.New(cfg.AdminToken),
+	}
+
+	// ── Expire unpaid pending bookings on an interval ──────────────────────────
+	expiryCtx, stopExpiry := context.WithCancel(context.Background())
+	defer stopExpiry()
+	go scheduler.StartPendingExpiryLoop(expiryCtx, database, 5*time.Minute)
 
 	// ── Public router ─────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
@@ -88,6 +108,39 @@ func main() {
 	mux.Handle("POST /api/bookings/pair",
 		handlers.BookingPairHandler(database, bookingDeps),
 	)
+	// Stripe calls this server-to-server; it verifies its own signature on the
+	// raw body, so it needs no CORS and no auth.
+	mux.Handle("POST /api/stripe/webhook",
+		handlers.StripeWebhookHandler(database, bookingDeps),
+	)
+	mux.Handle("GET /api/bookings/status",
+		handlers.BookingStatusHandler(database),
+	)
+	mux.Handle("GET /api/subscriptions/status",
+		handlers.SubscriptionStatusHandler(database),
+	)
+	mux.Handle("POST /api/subscriptions/portal",
+		handlers.PortalHandler(database, bookingDeps),
+	)
+	mux.Handle("POST /api/member/request-link",
+		handlers.RequestMemberLinkHandler(database, bookingDeps),
+	)
+	mux.Handle("GET /api/member/verify",
+		handlers.VerifyMemberHandler(database, bookingDeps),
+	)
+	// Client self-service booking management (via signed link in their email).
+	mux.Handle("GET /api/bookings/manage",
+		handlers.ManageBookingHandler(database, bookingDeps),
+	)
+	mux.Handle("POST /api/bookings/reschedule",
+		handlers.RescheduleHandler(database, bookingDeps),
+	)
+	mux.Handle("POST /api/bookings/request-cancellation",
+		handlers.RequestCancellationHandler(database, bookingDeps),
+	)
+	mux.Handle("POST /api/bookings/manage-portal",
+		handlers.ManagePortalHandler(database, bookingDeps),
+	)
 
 	// ── Admin routes (all require Bearer token) ───────────────────────────────
 	adminAuth := middleware.AdminAuth(cfg.AdminToken)
@@ -105,7 +158,7 @@ func main() {
 		adminAuth(handlers.AdminListBookingsHandler(database)))
 
 	mux.Handle("PATCH /api/admin/bookings/{id}/cancel",
-		adminAuth(handlers.AdminCancelBookingHandler(database)))
+		adminAuth(handlers.AdminCancelBookingHandler(database, bookingDeps)))
 
 	mux.Handle("GET /api/admin/contacts",
 		adminAuth(handlers.AdminListContactsHandler(database)))

@@ -135,6 +135,10 @@ type BookingConfirmationData struct {
 	// generic "full address sent separately" line.
 	StudioAddress    string
 	StudioWhat3Words string
+
+	// ManageURL, when set, links the client to the self-service page where they
+	// can reschedule or request a cancellation. Omitted on cancellation emails.
+	ManageURL string
 }
 
 // LocalStartsAt renders the booking start time in the studio's timezone. Used in
@@ -194,8 +198,13 @@ var bookingConfirmationTmpl = template.Must(template.New("booking_confirm").Pars
             {{end}}
           </table>
           <p style="font-size:12px;color:#8a8178;line-height:1.8;margin:0 0 16px;">
-            You'll receive a separate email with a short health questionnaire — please complete it before your session. If you need to cancel or rearrange, just reply to this email or contact me directly.
+            You'll receive a separate email with a short health questionnaire — please complete it before your session.
           </p>
+          {{if .ManageURL}}
+          <p style="font-size:12px;color:#8a8178;line-height:1.8;margin:0 0 16px;">
+            Need to change your plans? You can <a href="{{.ManageURL}}" style="color:#b8904a;">reschedule or request a cancellation here</a> (up to 24 hours before your session).
+          </p>
+          {{end}}
           <p style="font-size:12px;color:#8a8178;line-height:1.8;margin:0 0 40px;">
             See you soon,<br>
             <span style="color:#b8904a;">Laura</span>
@@ -244,6 +253,94 @@ var bookingNotificationTmpl = template.Must(template.New("booking_notify").Parse
 </body>
 </html>
 `))
+
+// BookingCancellationData is sent to a client when their booking is cancelled.
+type BookingCancellationData struct {
+	ClientName string
+	Treatment  string
+	StartsAt   time.Time
+	Refunded   bool
+	// IsSubscription true when this cancels the whole Maintenance Plan rather
+	// than a single session.
+	IsSubscription bool
+	// BookURL links back to the site to book again in future.
+	BookURL string
+}
+
+func (d BookingCancellationData) LocalStartsAt() string {
+	return localTime(d.StartsAt).Format("Monday 2 January 2006, 3:04pm")
+}
+
+var bookingCancellationTmpl = template.Must(template.New("booking_cancel").Parse(`
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light">
+</head>
+<body style="font-family:'Montserrat',Helvetica,sans-serif;background:#f4f0eb;color:#2a2622;margin:0;padding:0;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f0eb;">
+    <tr><td align="center" style="padding:40px 20px;">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-top:3px solid #C9A15B;">
+        <tr><td style="padding:40px 40px 20px;">
+          <p style="font-size:11px;letter-spacing:0.3em;text-transform:uppercase;color:#b8904a;margin:0 0 16px;">LMW Recovery</p>
+          <h1 style="font-family:Georgia,serif;font-size:28px;font-weight:400;color:#2a2622;margin:0 0 24px;line-height:1.2;">
+            {{if .IsSubscription}}Your plan has been cancelled{{else}}Your session has been cancelled{{end}}, {{.ClientName}}.
+          </h1>
+          {{if .IsSubscription}}
+          <p style="font-size:13px;color:#555150;line-height:1.8;margin:0 0 24px;">
+            Your Maintenance Plan subscription has been cancelled and you won't be charged again. Any sessions already booked and paid for within your plan still stand — we'll see you for those. Only sessions beyond your paid period have been released.
+          </p>
+          {{else}}
+          <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #e7ddc9;margin-bottom:24px;">
+            <tr>
+              <td style="padding:12px 0;border-bottom:1px solid #efe8da;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#b8904a;width:140px;">Treatment</td>
+              <td style="padding:12px 0;border-bottom:1px solid #efe8da;font-size:13px;color:#2a2622;">{{.Treatment}}</td>
+            </tr>
+            <tr>
+              <td style="padding:12px 0;border-bottom:1px solid #efe8da;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:#b8904a;">Was booked for</td>
+              <td style="padding:12px 0;border-bottom:1px solid #efe8da;font-size:13px;color:#2a2622;">{{.LocalStartsAt}}</td>
+            </tr>
+          </table>
+          {{end}}
+          {{if .Refunded}}
+          <p style="font-size:13px;color:#555150;line-height:1.8;margin:0 0 24px;">
+            A full refund has been issued — it may take a few days to appear on your statement.
+          </p>
+          {{end}}
+          {{if .BookURL}}
+          <p style="margin:0 0 32px;">
+            <a href="{{.BookURL}}" style="display:inline-block;font-size:12px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:#171717;background:#C9A15B;padding:14px 28px;text-decoration:none;">Book another session</a>
+          </p>
+          {{end}}
+          <p style="font-size:12px;color:#8a8178;line-height:1.8;margin:0 0 40px;">
+            We hope to see you again soon.<br>
+            <span style="color:#b8904a;">Laura</span>
+          </p>
+          <p style="font-size:10px;color:#b3a99c;margin:0;">
+            LMW Recovery · Llantrisant, RCT · info@lmwrecovery.co.uk
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+`))
+
+// SendBookingCancellation emails a client that their booking (or plan) was cancelled.
+func (m *Mailer) SendBookingCancellation(to string, data BookingCancellationData) error {
+	html, err := render(bookingCancellationTmpl, data)
+	if err != nil {
+		return err
+	}
+	subject := "Your LMW Recovery session has been cancelled"
+	if data.IsSubscription {
+		subject = "Your LMW Recovery plan has been cancelled"
+	}
+	return m.Send(Message{To: to, Subject: subject, HTML: html})
+}
 
 // ContactNotificationData is sent to Laura when someone submits the contact form.
 type ContactNotificationData struct {
@@ -347,6 +444,54 @@ func (m *Mailer) SendContactAck(to string, data ContactNotificationData) error {
 	return m.Send(Message{
 		To:      to,
 		Subject: "Thanks for getting in touch — LMW Recovery",
+		HTML:    html,
+	})
+}
+
+// memberLinkTmpl is the passwordless magic-link email sent to a member who wants
+// to book their plan sessions. The link proves they control the inbox.
+var memberLinkTmpl = template.Must(template.New("member_link").Parse(`
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light">
+</head>
+<body style="font-family:'Montserrat',Helvetica,sans-serif;background:#f4f0eb;color:#2a2622;margin:0;padding:0;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f0eb;">
+    <tr><td align="center" style="padding:40px 20px;">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-top:3px solid #C9A15B;">
+        <tr><td style="padding:40px;">
+          <p style="font-size:11px;letter-spacing:0.3em;text-transform:uppercase;color:#b8904a;margin:0 0 16px;">LMW Recovery</p>
+          <h1 style="font-family:Georgia,serif;font-size:26px;font-weight:400;color:#2a2622;margin:0 0 20px;">Book your plan sessions</h1>
+          <p style="font-size:13px;color:#555150;line-height:1.8;margin:0 0 28px;">
+            Tap the button below to confirm it's you, then choose this month's two Maintenance Plan sessions. This link expires in 30 minutes and can only be used by you.
+          </p>
+          <p style="margin:0 0 32px;">
+            <a href="{{.Link}}" style="display:inline-block;font-size:12px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:#171717;background:#C9A15B;padding:14px 28px;text-decoration:none;">Book my sessions</a>
+          </p>
+          <p style="font-size:11px;color:#8a8178;line-height:1.7;margin:0 0 40px;">
+            If you didn't request this, you can ignore this email — nothing will happen.
+          </p>
+          <p style="font-size:10px;color:#b3a99c;margin:0;">info@lmwrecovery.co.uk · lmwrecovery.co.uk</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+`))
+
+// SendMemberLink emails a passwordless magic link to a member.
+func (m *Mailer) SendMemberLink(to, link string) error {
+	html, err := render(memberLinkTmpl, map[string]string{"Link": link})
+	if err != nil {
+		return err
+	}
+	return m.Send(Message{
+		To:      to,
+		Subject: "Book your LMW Recovery plan sessions",
 		HTML:    html,
 	})
 }

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"lmwrecovery/backend/internal/mailer"
 	"lmwrecovery/backend/internal/models"
+	"lmwrecovery/backend/internal/payments"
 )
 
 type bookingRequest struct {
@@ -101,19 +101,66 @@ func BookingHandler(db *sql.DB, deps BookingDeps) http.HandlerFunc {
 			return
 		}
 
-		// Insert booking
+		// Resolve the canonical price server-side from the treatment — never
+		// trust a client-sent amount. Match by name (what the client sends) and
+		// fall back to duration-based lookup is not needed since names are fixed.
+		treatment, ok := models.TreatmentByName(req.Treatment)
+		if !ok {
+			jsonError(w, "unknown treatment", http.StatusBadRequest)
+			return
+		}
+		if treatment.AmountPence <= 0 {
+			// e.g. the Maintenance Plan, which is a subscription, not one-off.
+			jsonError(w, "this treatment cannot be booked as a one-off payment", http.StatusBadRequest)
+			return
+		}
+
+		// Insert as pending/unpaid. 'pending' holds the slot via the overlap
+		// query so nobody else can check out the same time while this client
+		// pays. It becomes 'confirmed'/'paid' on the Stripe webhook.
 		var booking models.Booking
 		row := tx.QueryRow(`
 			INSERT INTO bookings
-			  (slot_id, treatment, treatment_duration_minutes, client_name, client_email, client_phone, notes, status)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmed')
+			  (slot_id, treatment, treatment_duration_minutes, client_name, client_email, client_phone, notes,
+			   status, amount_pence, currency, payment_status)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, 'gbp', 'unpaid')
 			RETURNING id, created_at`,
 			slot.ID, req.Treatment, req.TreatmentDurationMins,
 			req.ClientName, req.ClientEmail, req.ClientPhone, req.Notes,
+			treatment.AmountPence,
 		)
 		if err := row.Scan(&booking.ID, &booking.CreatedAt); err != nil {
 			log.Printf("ERROR insert booking: %v", err)
 			jsonError(w, "could not save booking", http.StatusInternalServerError)
+			return
+		}
+
+		// Create the Stripe Checkout session for this booking.
+		if deps.Stripe == nil || !deps.Stripe.Enabled() {
+			log.Printf("ERROR stripe not configured")
+			jsonError(w, "payments are not available right now", http.StatusServiceUnavailable)
+			return
+		}
+		base := strings.TrimRight(deps.PublicBaseURL, "/")
+		sessionID, checkoutURL, err := deps.Stripe.CreateCheckoutSession(payments.CheckoutParams{
+			BookingID:     booking.ID,
+			AmountPence:   int64(treatment.AmountPence),
+			Currency:      "gbp",
+			ProductName:   treatment.Name,
+			Description:   slot.StartsAt.In(studioLocation).Format("Monday 2 January 2006, 3:04pm"),
+			CustomerEmail: req.ClientEmail,
+			SuccessURL:    base + "/booking/success?session_id={CHECKOUT_SESSION_ID}",
+			CancelURL:     base + "/booking/cancelled",
+		})
+		if err != nil {
+			log.Printf("ERROR create checkout session: %v", err)
+			jsonError(w, "could not start payment", http.StatusBadGateway)
+			return
+		}
+
+		if _, err := tx.Exec(`UPDATE bookings SET stripe_session_id = ? WHERE id = ?`, sessionID, booking.ID); err != nil {
+			log.Printf("ERROR store session id: %v", err)
+			jsonError(w, "server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -123,55 +170,11 @@ func BookingHandler(db *sql.DB, deps BookingDeps) http.HandlerFunc {
 			return
 		}
 
-		booking.SlotID = slot.ID
-		booking.Treatment = req.Treatment
-		booking.TreatmentDurationMins = req.TreatmentDurationMins
-		booking.ClientName = req.ClientName
-		booking.ClientEmail = req.ClientEmail
-		booking.ClientPhone = req.ClientPhone
-		booking.Notes = req.Notes
-		booking.Status = "confirmed"
-		booking.Slot = &slot
-
-		go func() {
-			if err := deps.Mailer.SendBookingConfirmation(booking.ClientEmail, mailer.BookingConfirmationData{
-				ClientName:       booking.ClientName,
-				Treatment:        booking.Treatment,
-				StartsAt:         slot.StartsAt,
-				Notes:            booking.Notes,
-				StudioAddress:    deps.StudioAddress,
-				StudioWhat3Words: deps.StudioWhat3Words,
-			}); err != nil {
-				log.Printf("ERROR send booking confirmation: %v", err)
-			}
-			if err := deps.Mailer.SendBookingNotification(deps.NotifyTo, mailer.BookingNotificationData{
-				ClientName:  booking.ClientName,
-				ClientEmail: booking.ClientEmail,
-				ClientPhone: booking.ClientPhone,
-				Treatment:   booking.Treatment,
-				StartsAt:    slot.StartsAt,
-				Notes:       booking.Notes,
-			}); err != nil {
-				log.Printf("ERROR send booking notification: %v", err)
-			}
-			deps.notifyOwner(ownerBookingMessage(
-				booking.ClientName, booking.Treatment, slot.StartsAt, booking.ClientPhone,
-			))
-			if deps.BrevoAPIKey != "" && deps.BrevoTemplateID > 0 {
-				if err := triggerBrevoQuestionnaire(deps.BrevoAPIKey, deps.BrevoTemplateID, booking); err != nil {
-					log.Printf("ERROR brevo questionnaire: %v", err)
-				} else {
-					if _, err := db.Exec(`UPDATE bookings SET brevo_sent = 1 WHERE id = ?`, booking.ID); err != nil {
-						log.Printf("ERROR update brevo_sent: %v", err)
-					}
-				}
-			}
-		}()
-
+		// No emails yet — those fire from the webhook once payment succeeds.
 		jsonOK(w, map[string]any{
-			"message":    "Booking confirmed. Check your email for details.",
-			"booking_id": booking.ID,
-			"slot":       slot,
+			"message":      "Booking reserved. Complete payment to confirm.",
+			"booking_id":   booking.ID,
+			"checkout_url": checkoutURL,
 		})
 	}
 }

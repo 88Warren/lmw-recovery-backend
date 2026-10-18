@@ -3,13 +3,14 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
-	"lmwrecovery/backend/internal/mailer"
 	"lmwrecovery/backend/internal/models"
+	"lmwrecovery/backend/internal/payments"
 )
 
 type bookingPairRequest struct {
@@ -21,6 +22,11 @@ type bookingPairRequest struct {
 	ClientEmail           string `json:"client_email"`
 	ClientPhone           string `json:"client_phone"`
 	Notes                 string `json:"notes"`
+
+	// MemberToken is a magic-link token proving the client controls ClientEmail.
+	// Required to book member sessions without paying; without a valid token the
+	// client is treated as a new signup and sent to subscription Checkout.
+	MemberToken string `json:"member_token"`
 }
 
 // BookingPairHandler handles POST /api/bookings/pair
@@ -56,6 +62,47 @@ func BookingPairHandler(db *sql.DB, deps BookingDeps) http.HandlerFunc {
 		}
 		if req.TreatmentDurationMins <= 0 {
 			req.TreatmentDurationMins = 60
+		}
+
+		// Check membership BEFORE opening the transaction. SQLite runs on a
+		// single connection (SetMaxOpenConns(1)); querying via the pool while a
+		// transaction holds that one connection would deadlock.
+		//
+		// A client only gets the free member path if they BOTH have an active
+		// subscription AND present a valid magic-link token proving they control
+		// this email. Knowing a subscriber's email is not enough — the token
+		// must have been delivered to that inbox. Without a valid token we treat
+		// them as a new signup (they go to Checkout and pay).
+		hasActiveSub, memberSubRowID, _ := activeSubscriptionFor(db, req.ClientEmail)
+		tokenValid := false
+		if req.MemberToken != "" && deps.MemberSigner != nil && deps.MemberSigner.Enabled() {
+			if tokEmail, verr := deps.MemberSigner.Verify(req.MemberToken); verr == nil {
+				tokenValid = strings.EqualFold(strings.TrimSpace(tokEmail), req.ClientEmail)
+			}
+		}
+		memberActive := hasActiveSub && tokenValid
+
+		// Hard limit: a member gets MaxSessionsPerPeriod (2) sessions per billing
+		// period. This pair books 2 at once, so an existing member must have 0
+		// used this period. (A brand-new signup always starts at 0.)
+		if memberActive {
+			used, cerr := memberSessionsThisPeriod(db, memberSubRowID)
+			if cerr != nil {
+				log.Printf("ERROR count member sessions: %v", cerr)
+				jsonError(w, "server error", http.StatusInternalServerError)
+				return
+			}
+			if used+2 > MaxSessionsPerPeriod {
+				remaining := MaxSessionsPerPeriod - used
+				if remaining < 0 {
+					remaining = 0
+				}
+				jsonError(w, fmt.Sprintf(
+					"your plan covers %d sessions per month and you have %d left this period — please book after your plan renews or contact us",
+					MaxSessionsPerPeriod, remaining,
+				), http.StatusConflict)
+				return
+			}
 		}
 
 		tx, err := db.Begin()
@@ -108,17 +155,30 @@ func BookingPairHandler(db *sql.DB, deps BookingDeps) http.HandlerFunc {
 			}
 		}
 
-		// Insert both bookings
+		// Active member? Their two sessions are covered by the running
+		// subscription — confirm now, no new payment. Otherwise they sign up
+		// (pay) via subscription Checkout, confirmed by the webhook.
+		// (membership was resolved before the transaction opened — see above.)
+		insertStatus := "pending"
+		var subIDArg any // NULL unless an active member
+		if memberActive {
+			insertStatus = "confirmed"
+			subIDArg = memberSubRowID
+		}
+
 		bookings := make([]models.Booking, 2)
+		bookingIDs := make([]int64, 2)
 		for i, s := range slots {
 			var b models.Booking
 			row := tx.QueryRow(`
 				INSERT INTO bookings
-				  (slot_id, treatment, treatment_duration_minutes, client_name, client_email, client_phone, notes, status)
-				VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmed')
+				  (slot_id, treatment, treatment_duration_minutes, client_name, client_email, client_phone, notes,
+				   status, amount_pence, currency, payment_status, subscription_id)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'gbp', ?, ?)
 				RETURNING id, created_at`,
 				s.ID, req.Treatment, req.TreatmentDurationMins,
 				req.ClientName, req.ClientEmail, req.ClientPhone, req.Notes,
+				insertStatus, map[bool]string{true: "paid", false: "unpaid"}[memberActive], subIDArg,
 			)
 			if err := row.Scan(&b.ID, &b.CreatedAt); err != nil {
 				log.Printf("ERROR insert booking %d: %v", i+1, err)
@@ -132,9 +192,42 @@ func BookingPairHandler(db *sql.DB, deps BookingDeps) http.HandlerFunc {
 			b.ClientEmail = req.ClientEmail
 			b.ClientPhone = req.ClientPhone
 			b.Notes = req.Notes
-			b.Status = "confirmed"
+			b.Status = insertStatus
 			b.Slot = &slots[i]
 			bookings[i] = b
+			bookingIDs[i] = b.ID
+		}
+
+		// New member: create the subscription Checkout session before committing,
+		// so a Stripe failure rolls back the held slots.
+		var checkoutURL string
+		if !memberActive {
+			if deps.Stripe == nil || !deps.Stripe.Enabled() || deps.MaintenancePriceID == "" {
+				jsonError(w, "subscriptions are not available right now", http.StatusServiceUnavailable)
+				return
+			}
+			base := strings.TrimRight(deps.PublicBaseURL, "/")
+			sessionID, url, serr := deps.Stripe.CreateSubscriptionCheckout(payments.SubscriptionCheckoutParams{
+				PriceID:       deps.MaintenancePriceID,
+				BookingIDs:    bookingIDs,
+				CustomerEmail: req.ClientEmail,
+				ClientName:    req.ClientName,
+				SuccessURL:    base + "/booking/success?session_id={CHECKOUT_SESSION_ID}",
+				CancelURL:     base + "/booking/cancelled",
+			})
+			if serr != nil {
+				log.Printf("ERROR create subscription checkout: %v", serr)
+				jsonError(w, "could not start subscription", http.StatusBadGateway)
+				return
+			}
+			checkoutURL = url
+			for _, id := range bookingIDs {
+				if _, err := tx.Exec(`UPDATE bookings SET stripe_session_id = ? WHERE id = ?`, sessionID, id); err != nil {
+					log.Printf("ERROR store session id: %v", err)
+					jsonError(w, "server error", http.StatusInternalServerError)
+					return
+				}
+			}
 		}
 
 		if err := tx.Commit(); err != nil {
@@ -143,47 +236,21 @@ func BookingPairHandler(db *sql.DB, deps BookingDeps) http.HandlerFunc {
 			return
 		}
 
+		// New member pays first — notifications fire from the webhook on success.
+		if !memberActive {
+			jsonOK(w, map[string]any{
+				"message":      "Sessions reserved. Complete subscription to confirm.",
+				"booking_ids":  bookingIDs,
+				"checkout_url": checkoutURL,
+				"subscription": true,
+			})
+			return
+		}
+
+		// Existing member: sessions are confirmed now; fire notifications.
 		go func() {
-			// Times rendered in the studio's local timezone (slots are UTC).
-			session2Local := slots[1].StartsAt.In(studioLocation).Format("Monday 2 January 2006, 3:04pm")
-
-			notesExtra := req.Notes
-			if notesExtra != "" {
-				notesExtra += "\n"
-			}
-			notesExtra += "Session 2: " + session2Local
-
-			if err := deps.Mailer.SendBookingConfirmation(req.ClientEmail, mailer.BookingConfirmationData{
-				ClientName:       req.ClientName,
-				Treatment:        req.Treatment + " (2 sessions)",
-				StartsAt:         slots[0].StartsAt,
-				Notes:            notesExtra,
-				StudioAddress:    deps.StudioAddress,
-				StudioWhat3Words: deps.StudioWhat3Words,
-			}); err != nil {
-				log.Printf("ERROR send booking confirmation: %v", err)
-			}
-
-			s1 := slots[0].StartsAt.In(studioLocation).Format("Mon 2 Jan, 3:04pm")
-			s2 := slots[1].StartsAt.In(studioLocation).Format("Mon 2 Jan, 3:04pm")
-			if err := deps.Mailer.SendBookingNotification(deps.NotifyTo, mailer.BookingNotificationData{
-				ClientName:  req.ClientName,
-				ClientEmail: req.ClientEmail,
-				ClientPhone: req.ClientPhone,
-				Treatment:   req.Treatment + " (2 sessions)",
-				StartsAt:    slots[0].StartsAt,
-				Notes:       "Session 1: " + s1 + "\nSession 2: " + s2,
-			}); err != nil {
-				log.Printf("ERROR send booking notification: %v", err)
-			}
-
-			pairMsg := "New LMW Recovery booking (Maintenance Plan — 2 sessions)\n" +
-				req.ClientName + "\nSession 1: " + s1 + "\nSession 2: " + s2
-			if req.ClientPhone != "" {
-				pairMsg += "\n" + req.ClientPhone
-			}
-			deps.notifyOwner(pairMsg)
-
+			starts := []time.Time{slots[0].StartsAt, slots[1].StartsAt}
+			fireSubscriptionConfirmed(deps, req.ClientName, req.ClientEmail, bookings, starts)
 			if deps.BrevoAPIKey != "" && deps.BrevoTemplateID > 0 {
 				if err := triggerBrevoQuestionnaire(deps.BrevoAPIKey, deps.BrevoTemplateID, bookings[0]); err != nil {
 					log.Printf("ERROR brevo questionnaire: %v", err)
