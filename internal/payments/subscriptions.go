@@ -40,6 +40,10 @@ func (s *Service) CreateSubscriptionCheckout(p SubscriptionCheckoutParams) (sess
 		SuccessURL:    stripe.String(p.SuccessURL),
 		CancelURL:     stripe.String(p.CancelURL),
 		CustomerEmail: stripe.String(p.CustomerEmail),
+		// Show Stripe's hosted "Add promotion code" field. Promotion codes
+		// (incl. ones that apply to the recurring plan) are created in the
+		// Stripe dashboard.
+		AllowPromotionCodes: stripe.Bool(true),
 		LineItems: []*stripe.CheckoutSessionLineItemParams{
 			{Price: stripe.String(p.PriceID), Quantity: stripe.Int64(1)},
 		},

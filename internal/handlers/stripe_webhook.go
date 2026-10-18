@@ -123,12 +123,14 @@ func confirmPaidBooking(db *sql.DB, deps BookingDeps, res payments.CheckoutResul
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	// Record the actual amount paid (reflects any promotion code applied at
+	// Checkout), not the list price.
 	if _, err := tx.Exec(`
 		UPDATE bookings
 		SET status = 'confirmed', payment_status = 'paid',
-		    stripe_payment_intent_id = ?, paid_at = ?
+		    stripe_payment_intent_id = ?, amount_pence = ?, paid_at = ?
 		WHERE id = ?`,
-		res.PaymentIntentID, now, res.BookingID,
+		res.PaymentIntentID, res.AmountPence, now, res.BookingID,
 	); err != nil {
 		return err
 	}

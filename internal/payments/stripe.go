@@ -66,6 +66,9 @@ func (s *Service) CreateCheckoutSession(p CheckoutParams) (sessionID, url string
 		CancelURL:         stripe.String(p.CancelURL),
 		ClientReferenceID: stripe.String(bookingRef),
 		CustomerEmail:     stripe.String(p.CustomerEmail),
+		// Show Stripe's hosted "Add promotion code" field. Codes are created and
+		// managed in the Stripe dashboard (Products → Coupons → Promotion codes).
+		AllowPromotionCodes: stripe.Bool(true),
 		LineItems: []*stripe.CheckoutSessionLineItemParams{
 			{
 				Quantity: stripe.Int64(1),
