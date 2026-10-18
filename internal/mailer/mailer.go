@@ -198,7 +198,7 @@ var bookingConfirmationTmpl = template.Must(template.New("booking_confirm").Pars
             {{end}}
           </table>
           <p style="font-size:12px;color:#8a8178;line-height:1.8;margin:0 0 16px;">
-            You'll receive a separate email with a short health questionnaire — please complete it before your session.
+            I'll send you a separate email with a short health screening form — please complete it online before your session. It only takes a couple of minutes on your phone.
           </p>
           {{if .ManageURL}}
           <p style="font-size:12px;color:#8a8178;line-height:1.8;margin:0 0 16px;">
@@ -502,4 +502,75 @@ func render(tmpl *template.Template, data any) (string, error) {
 		return "", fmt.Errorf("render template %s: %w", tmpl.Name(), err)
 	}
 	return buf.String(), nil
+}
+
+// ── Screening form email ──────────────────────────────────────────────────────
+
+// ScreeningFormData is the data passed to the screening-form invite template.
+type ScreeningFormData struct {
+	ClientName string
+	// FormURL is the signed, client-specific link to the online screening form.
+	FormURL string
+	// PrivacyURL and TermsURL link the policies the client acknowledges.
+	PrivacyURL string
+	TermsURL   string
+}
+
+// screeningFormTmpl invites the client to complete the pre-session health
+// screening form online. Branding mirrors the booking confirmation email.
+var screeningFormTmpl = template.Must(template.New("screening_form").Parse(`
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light">
+</head>
+<body style="font-family:'Montserrat',Helvetica,sans-serif;background:#f4f0eb;color:#2a2622;margin:0;padding:0;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f0eb;">
+    <tr><td align="center" style="padding:40px 20px;">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-top:3px solid #C9A15B;">
+        <tr><td style="padding:40px;">
+          <p style="font-size:11px;letter-spacing:0.3em;text-transform:uppercase;color:#b8904a;margin:0 0 16px;">LMW Recovery</p>
+          <h1 style="font-family:Georgia,serif;font-size:26px;font-weight:400;color:#2a2622;margin:0 0 20px;line-height:1.25;">
+            One quick thing before your session, {{.ClientName}}.
+          </h1>
+          <p style="font-size:13px;color:#555150;line-height:1.8;margin:0 0 20px;">
+            Please take two minutes to complete your health screening form. It helps me make sure your treatment is safe and tailored to you, and it's completely confidential. You can fill it in on your phone — no app or download needed.
+          </p>
+          <p style="margin:0 0 28px;">
+            <a href="{{.FormURL}}" style="display:inline-block;font-size:12px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:#171717;background:#C9A15B;padding:14px 28px;text-decoration:none;">Complete my form</a>
+          </p>
+          <p style="font-size:11px;color:#8a8178;line-height:1.7;margin:0 0 24px;">
+            Your answers are stored securely and seen only by me. For how your information is handled, see our
+            {{if .PrivacyURL}}<a href="{{.PrivacyURL}}" style="color:#b8904a;">Privacy Policy</a>{{else}}Privacy Policy{{end}}
+            and
+            {{if .TermsURL}}<a href="{{.TermsURL}}" style="color:#b8904a;">Terms of Service</a>{{else}}Terms of Service{{end}}.
+          </p>
+          <p style="font-size:12px;color:#8a8178;line-height:1.8;margin:0 0 40px;">
+            Thank you,<br>
+            <span style="color:#b8904a;">Laura</span>
+          </p>
+          <p style="font-size:10px;color:#b3a99c;margin:0;">
+            LMW Recovery · Llantrisant, RCT · info@lmwrecovery.co.uk
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+`))
+
+// SendScreeningForm emails the client their personalised screening-form link.
+func (m *Mailer) SendScreeningForm(to string, data ScreeningFormData) error {
+	html, err := render(screeningFormTmpl, data)
+	if err != nil {
+		return err
+	}
+	return m.Send(Message{
+		To:      to,
+		Subject: "Your LMW Recovery health screening form",
+		HTML:    html,
+	})
 }

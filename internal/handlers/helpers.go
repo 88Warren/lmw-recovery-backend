@@ -81,6 +81,21 @@ func (d BookingDeps) fireBookingConfirmed(db *sql.DB, b models.Booking, startsAt
 	}
 	d.notifyOwner(ownerBookingMessage(b.ClientName, b.Treatment, startsAt, b.ClientPhone))
 
+	// Send the health screening form link. This is the form promised in the
+	// confirmation email — a mobile-friendly web form the client fills in and
+	// submits back, stored for the owner in the admin area.
+	if url := d.screeningURL(b.ID); url != "" {
+		base := strings.TrimRight(d.PublicBaseURL, "/")
+		if err := d.Mailer.SendScreeningForm(b.ClientEmail, mailer.ScreeningFormData{
+			ClientName: b.ClientName,
+			FormURL:    url,
+			PrivacyURL: base + "/docs/LMW_Recovery_Privacy_Policy.html",
+			TermsURL:   base + "/docs/LMW_Recovery_Terms_of_Service.html",
+		}); err != nil {
+			log.Printf("ERROR send screening form: %v", err)
+		}
+	}
+
 	if d.BrevoAPIKey != "" && d.BrevoTemplateID > 0 {
 		if err := triggerBrevoQuestionnaire(d.BrevoAPIKey, d.BrevoTemplateID, b); err != nil {
 			log.Printf("ERROR brevo questionnaire: %v", err)
@@ -103,6 +118,22 @@ func (d BookingDeps) manageURL(bookingID int64) string {
 	}
 	base := strings.TrimRight(d.PublicBaseURL, "/")
 	return base + "/booking/manage?token=" + tok
+}
+
+// screeningURL builds the client's personalised health-screening form link, or
+// "" if member tokens aren't configured. The signed token authorises completing
+// the form for this specific booking.
+func (d BookingDeps) screeningURL(bookingID int64) string {
+	if d.MemberSigner == nil || !d.MemberSigner.Enabled() {
+		return ""
+	}
+	tok, err := d.MemberSigner.IssueScreening(bookingID, memberauth.ScreeningTokenTTL)
+	if err != nil {
+		log.Printf("ERROR issue screening token: %v", err)
+		return ""
+	}
+	base := strings.TrimRight(d.PublicBaseURL, "/")
+	return base + "/booking/screening?token=" + tok
 }
 
 // notifyOwner sends a best-effort booking alert to the owner over whatever

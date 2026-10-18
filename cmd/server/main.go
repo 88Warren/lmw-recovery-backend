@@ -141,6 +141,13 @@ func main() {
 	mux.Handle("POST /api/bookings/manage-portal",
 		handlers.ManagePortalHandler(database, bookingDeps),
 	)
+	// Client health screening form (via signed link in their confirmation email).
+	mux.Handle("GET /api/screening",
+		handlers.ScreeningIntroHandler(database, bookingDeps),
+	)
+	mux.Handle("POST /api/screening",
+		handlers.ScreeningSubmitHandler(database, bookingDeps),
+	)
 
 	// ── Admin routes (all require Bearer token) ───────────────────────────────
 	adminAuth := middleware.AdminAuth(cfg.AdminToken)
@@ -162,6 +169,12 @@ func main() {
 
 	mux.Handle("GET /api/admin/contacts",
 		adminAuth(handlers.AdminListContactsHandler(database)))
+
+	mux.Handle("GET /api/admin/screening",
+		adminAuth(handlers.AdminListScreeningHandler(database)))
+
+	mux.Handle("GET /api/admin/screening/{id}",
+		adminAuth(handlers.AdminGetScreeningHandler(database)))
 
 	// ── Global middleware chain ───────────────────────────────────────────────
 	var handler http.Handler = mux
