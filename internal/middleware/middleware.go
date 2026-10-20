@@ -3,16 +3,39 @@ package middleware
 import (
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
-// CORS adds the necessary headers to allow the frontend origin to call the API.
-func CORS(origin string) func(http.Handler) http.Handler {
+// CORS adds the headers that allow the configured frontend origin(s) to call
+// the API. It accepts a comma-separated list of allowed origins (e.g.
+// "https://lmwrecovery.co.uk,https://www.lmwrecovery.co.uk") and echoes back
+// the single origin that matches the incoming request's Origin header.
+//
+// Echoing a single matched origin — rather than a static value — is the
+// spec-correct way to support more than one origin: the
+// Access-Control-Allow-Origin header may contain only one origin, and when
+// credentials are allowed it must not be the "*" wildcard.
+func CORS(allowedOrigins string) func(http.Handler) http.Handler {
+	// Parse once at setup into a set for O(1) lookups.
+	allowed := make(map[string]struct{})
+	for _, o := range strings.Split(allowedOrigins, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			allowed[o] = struct{}{}
+		}
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			origin := r.Header.Get("Origin")
+			if _, ok := allowed[origin]; ok {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				// Caches must vary on Origin since the header is request-dependent.
+				w.Header().Add("Vary", "Origin")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
 
 			// Handle pre-flight
 			if r.Method == http.MethodOptions {
