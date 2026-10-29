@@ -47,13 +47,17 @@ func Open(path string) (*sql.DB, error) {
 //
 // It is idempotent: on an already-correct database it does nothing.
 //
-// Two drifts are repaired:
+// Three drifts are repaired:
 //  1. slots still carries the legacy `ends_at`/`available` columns — the
 //     scheduler inserts start-time-only rows, so `ends_at NOT NULL` makes
-//     seeding fail. We rebuild slots to (id, starts_at UNIQUE).
+//     seeding fail. We rebuild slots to (id, starts_at UNIQUE, blocked).
 //  2. bookings is missing `treatment_duration_minutes` — the overlap queries
 //     reference it. We add it with a sensible default (60) while preserving
 //     any existing values.
+//  3. slots is missing the `blocked` flag (migration 009) — e.g. on a legacy
+//     database that migration 009 could not patch because the slots rebuild in
+//     step 1 ran in the same boot and recreated the table without it. We add it
+//     idempotently with a default of 0 (open).
 func reconcileSchema(conn *sql.DB) error {
 	// ── bookings.treatment_duration_minutes ─────────────────────────────────
 	hasDuration, err := columnExists(conn, "bookings", "treatment_duration_minutes")
@@ -79,7 +83,8 @@ func reconcileSchema(conn *sql.DB) error {
 		return err
 	}
 	if !hasEndsAt && !hasAvailable {
-		return nil // already start-time-only
+		// Already start-time-only; just make sure the blocked flag is present.
+		return ensureSlotsBlockedColumn(conn)
 	}
 
 	// Rebuild slots via the standard SQLite table-alter recipe: create new, copy,
@@ -91,6 +96,20 @@ func reconcileSchema(conn *sql.DB) error {
 	// We intentionally only copy existing rows — including any that are already
 	// orphaned by pre-existing data — rather than deleting them, so this repair
 	// never destroys data a human may still want to inspect.
+	// Preserve an existing `blocked` flag if the legacy table happened to have
+	// one; otherwise default every copied row to 0 (open). This must be checked
+	// BEFORE opening the transaction below: the pool is capped to a single
+	// connection (SetMaxOpenConns(1)), so a query issued while a tx holds that
+	// connection would deadlock.
+	hadBlocked, err := columnExists(conn, "slots", "blocked")
+	if err != nil {
+		return err
+	}
+	copyBlocked := "0"
+	if hadBlocked {
+		copyBlocked = "blocked"
+	}
+
 	if _, err := conn.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
 		return fmt.Errorf("disable fks: %w", err)
 	}
@@ -110,9 +129,10 @@ func reconcileSchema(conn *sql.DB) error {
 		`CREATE TABLE slots_new (
 			id        INTEGER PRIMARY KEY AUTOINCREMENT,
 			starts_at DATETIME NOT NULL,
+			blocked   INTEGER  NOT NULL DEFAULT 0,
 			UNIQUE(starts_at)
 		)`,
-		`INSERT OR IGNORE INTO slots_new (id, starts_at) SELECT id, starts_at FROM slots`,
+		`INSERT OR IGNORE INTO slots_new (id, starts_at, blocked) SELECT id, starts_at, ` + copyBlocked + ` FROM slots`,
 		`DROP TABLE slots`,
 		`ALTER TABLE slots_new RENAME TO slots`,
 		`CREATE INDEX IF NOT EXISTS idx_slots_starts_at ON slots(starts_at)`,
@@ -127,6 +147,26 @@ func reconcileSchema(conn *sql.DB) error {
 		return fmt.Errorf("commit slots rebuild: %w", err)
 	}
 	log.Printf("schema: rebuilt slots as start-time-only")
+	return nil
+}
+
+// ensureSlotsBlockedColumn adds slots.blocked if it is missing. Idempotent: a
+// no-op once the column exists. Covers databases whose slots table was created
+// (or rebuilt) without the blocked flag migration 009 adds.
+func ensureSlotsBlockedColumn(conn *sql.DB) error {
+	has, err := columnExists(conn, "slots", "blocked")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := conn.Exec(
+		`ALTER TABLE slots ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0`,
+	); err != nil {
+		return fmt.Errorf("add slots.blocked: %w", err)
+	}
+	log.Printf("schema: added slots.blocked")
 	return nil
 }
 

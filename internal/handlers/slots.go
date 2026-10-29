@@ -137,6 +137,19 @@ func SlotsHandler(db *sql.DB) http.HandlerFunc {
 func freeMinutesAt(db *sql.DB, s time.Time) (int, error) {
 	start := s.Format(time.RFC3339)
 
+	// 0) Has Laura blocked this start time? A blocked slot is unavailable to
+	//    clients even though no booking exists, so report it as fully taken.
+	var blocked int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM slots WHERE datetime(starts_at) = datetime(?) AND blocked = 1`,
+		start,
+	).Scan(&blocked); err != nil {
+		return 0, err
+	}
+	if blocked > 0 {
+		return 0, nil
+	}
+
 	// 1) Is the start time itself inside an existing booking?
 	//    An existing booking B occupies [B.start, B.start + B.dur). S is taken
 	//    when B.start <= S < B.start + B.dur.

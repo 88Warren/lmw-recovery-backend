@@ -18,7 +18,7 @@ func setupFreeTestDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 
 	stmts := []string{
-		`CREATE TABLE slots (id INTEGER PRIMARY KEY AUTOINCREMENT, starts_at DATETIME NOT NULL, UNIQUE(starts_at))`,
+		`CREATE TABLE slots (id INTEGER PRIMARY KEY AUTOINCREMENT, starts_at DATETIME NOT NULL, blocked INTEGER NOT NULL DEFAULT 0, UNIQUE(starts_at))`,
 		`CREATE TABLE bookings (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			slot_id INTEGER NOT NULL REFERENCES slots(id),
@@ -119,5 +119,47 @@ func TestFreeMinutesNoBookings(t *testing.T) {
 	}
 	if got != maxFreeMinutes {
 		t.Errorf("free_minutes = %d, want %d (cap)", got, maxFreeMinutes)
+	}
+}
+
+// TestFreeMinutesBlockedSlot: a slot Laura has blocked reads as fully taken
+// (free_minutes = 0) even though no booking exists, and clearing the block
+// restores its availability.
+func TestFreeMinutesBlockedSlot(t *testing.T) {
+	db := setupFreeTestDB(t)
+
+	id := addSlot(t, db, "2026-10-18T18:00:00Z")
+
+	// Not blocked, nothing booked ahead -> reports the cap (open).
+	got, err := freeMinutesAt(db, mustParse(t, "2026-10-18T18:00:00Z"))
+	if err != nil {
+		t.Fatalf("freeMinutesAt: %v", err)
+	}
+	if got != maxFreeMinutes {
+		t.Fatalf("pre-block free_minutes = %d, want %d (cap)", got, maxFreeMinutes)
+	}
+
+	// Block it -> reads as fully taken.
+	if _, err := db.Exec(`UPDATE slots SET blocked = 1 WHERE id = ?`, id); err != nil {
+		t.Fatalf("block slot: %v", err)
+	}
+	got, err = freeMinutesAt(db, mustParse(t, "2026-10-18T18:00:00Z"))
+	if err != nil {
+		t.Fatalf("freeMinutesAt (blocked): %v", err)
+	}
+	if got != 0 {
+		t.Errorf("blocked free_minutes = %d, want 0", got)
+	}
+
+	// Unblock it -> available again.
+	if _, err := db.Exec(`UPDATE slots SET blocked = 0 WHERE id = ?`, id); err != nil {
+		t.Fatalf("unblock slot: %v", err)
+	}
+	got, err = freeMinutesAt(db, mustParse(t, "2026-10-18T18:00:00Z"))
+	if err != nil {
+		t.Fatalf("freeMinutesAt (unblocked): %v", err)
+	}
+	if got != maxFreeMinutes {
+		t.Errorf("post-unblock free_minutes = %d, want %d (cap)", got, maxFreeMinutes)
 	}
 }

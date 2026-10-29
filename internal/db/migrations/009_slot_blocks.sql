@@ -1,0 +1,12 @@
+-- ─── Blocked availability slots ──────────────────────────────────────────────
+-- Laura can mark an existing open slot as "blocked" when she is personally busy
+-- (e.g. a clash in her own calendar). A blocked slot is NOT a booking: no client
+-- is attached and no payment/email flow runs. It simply makes that start time
+-- read as unavailable to clients — the public /api/slots endpoint reports
+-- free_minutes = 0 for it, so the booking UI greys it out exactly like a time
+-- that is already taken, and POST /api/bookings refuses it.
+--
+-- Stored as a flag on the slot itself (the schema is start-time-only with
+-- UNIQUE(starts_at)), so "block this time" maps to a single UPDATE and is
+-- trivially reversible ("unblock").
+ALTER TABLE slots ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0; -- 0 = open, 1 = blocked by Laura

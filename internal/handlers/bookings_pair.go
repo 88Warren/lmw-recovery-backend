@@ -117,8 +117,9 @@ func BookingPairHandler(db *sql.DB, deps BookingDeps) http.HandlerFunc {
 		for i, slotID := range []int64{req.SlotID1, req.SlotID2} {
 			var s models.Slot
 			var startsStr string
-			err := tx.QueryRow(`SELECT id, starts_at FROM slots WHERE id = ?`, slotID).
-				Scan(&s.ID, &startsStr)
+			var blocked int
+			err := tx.QueryRow(`SELECT id, starts_at, blocked FROM slots WHERE id = ?`, slotID).
+				Scan(&s.ID, &startsStr, &blocked)
 			if err == sql.ErrNoRows {
 				jsonError(w, "slot not found", http.StatusNotFound)
 				return
@@ -126,6 +127,10 @@ func BookingPairHandler(db *sql.DB, deps BookingDeps) http.HandlerFunc {
 			if err != nil {
 				log.Printf("ERROR query slot %d: %v", slotID, err)
 				jsonError(w, "server error", http.StatusInternalServerError)
+				return
+			}
+			if blocked == 1 {
+				jsonError(w, "one or more selected times are no longer available", http.StatusConflict)
 				return
 			}
 			s.StartsAt, _ = time.Parse(time.RFC3339, startsStr)

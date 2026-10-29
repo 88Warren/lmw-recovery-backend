@@ -161,6 +161,9 @@ func main() {
 	mux.Handle("DELETE /api/admin/slots/{id}",
 		adminAuth(handlers.AdminDeleteSlotHandler(database)))
 
+	mux.Handle("PATCH /api/admin/slots/{id}/block",
+		adminAuth(handlers.AdminSetSlotBlockHandler(database)))
+
 	mux.Handle("GET /api/admin/bookings",
 		adminAuth(handlers.AdminListBookingsHandler(database)))
 

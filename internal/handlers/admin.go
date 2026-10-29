@@ -111,6 +111,75 @@ func AdminDeleteSlotHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// ── PATCH /api/admin/slots/{id}/block ─────────────────────────────────────
+//
+// Marks a slot as blocked (Laura is personally busy) or clears the block.
+// Body: { "blocked": true } to block, { "blocked": false } to unblock.
+//
+// A blocked slot carries no booking; it simply reads as unavailable to clients
+// (GET /api/slots reports free_minutes = 0 for it, and POST /api/bookings
+// refuses it). Blocking is refused if the slot already has an active booking —
+// those times are genuinely taken, so there is nothing to block; cancel the
+// booking instead if the session is not going ahead.
+
+type setSlotBlockRequest struct {
+	Blocked *bool `json:"blocked"`
+}
+
+func AdminSetSlotBlockHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || id == 0 {
+			jsonError(w, "invalid slot id", http.StatusBadRequest)
+			return
+		}
+
+		var req setSlotBlockRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Blocked == nil {
+			jsonError(w, "provide a boolean \"blocked\" field", http.StatusBadRequest)
+			return
+		}
+
+		// Confirm the slot exists.
+		var exists int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM slots WHERE id = ?`, id).Scan(&exists); err != nil {
+			jsonError(w, "server error", http.StatusInternalServerError)
+			return
+		}
+		if exists == 0 {
+			jsonError(w, "slot not found", http.StatusNotFound)
+			return
+		}
+
+		// Can't block a time that already has an active booking.
+		if *req.Blocked {
+			var active int
+			if err := db.QueryRow(
+				`SELECT COUNT(*) FROM bookings WHERE slot_id = ? AND status != 'cancelled'`, id,
+			).Scan(&active); err != nil {
+				jsonError(w, "server error", http.StatusInternalServerError)
+				return
+			}
+			if active > 0 {
+				jsonError(w, "slot has an active booking — cancel the booking instead", http.StatusConflict)
+				return
+			}
+		}
+
+		blockedVal := 0
+		if *req.Blocked {
+			blockedVal = 1
+		}
+		if _, err := db.Exec(`UPDATE slots SET blocked = ? WHERE id = ?`, blockedVal, id); err != nil {
+			log.Printf("ERROR update slot block %d: %v", id, err)
+			jsonError(w, "could not update slot", http.StatusInternalServerError)
+			return
+		}
+
+		jsonOK(w, map[string]any{"id": id, "blocked": *req.Blocked})
+	}
+}
+
 // ── GET /api/admin/slots ──────────────────────────────────────────────────
 
 type adminBookingSummary struct {
@@ -125,7 +194,7 @@ type adminBookingSummary struct {
 func AdminListSlotsHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rows, err := db.Query(`
-			SELECT s.id, s.starts_at,
+			SELECT s.id, s.starts_at, s.blocked,
 			       b.id, b.client_name, b.client_email, b.treatment,
 			       b.treatment_duration_minutes, b.status
 			FROM slots s
@@ -143,6 +212,7 @@ func AdminListSlotsHandler(db *sql.DB) http.HandlerFunc {
 		type slotRow struct {
 			ID       int64                `json:"id"`
 			StartsAt time.Time            `json:"starts_at"`
+			Blocked  bool                 `json:"blocked"`
 			Booking  *adminBookingSummary `json:"booking,omitempty"`
 		}
 
@@ -150,18 +220,20 @@ func AdminListSlotsHandler(db *sql.DB) http.HandlerFunc {
 		for rows.Next() {
 			var sr slotRow
 			var startsStr string
+			var blockedInt int
 			var bID sql.NullInt64
 			var bName, bEmail, bTreat, bStatus sql.NullString
 			var bDur sql.NullInt64
 
 			if err := rows.Scan(
-				&sr.ID, &startsStr,
+				&sr.ID, &startsStr, &blockedInt,
 				&bID, &bName, &bEmail, &bTreat, &bDur, &bStatus,
 			); err != nil {
 				log.Printf("ERROR scan admin slot: %v", err)
 				continue
 			}
 			sr.StartsAt, _ = time.Parse(time.RFC3339, startsStr)
+			sr.Blocked = blockedInt == 1
 
 			if bID.Valid {
 				sr.Booking = &adminBookingSummary{
