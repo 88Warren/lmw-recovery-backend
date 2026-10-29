@@ -6,19 +6,24 @@
 //   Tue – Thu : 18:00  18:30  19:00  19:30  20:00  20:30
 //   Sunday    : 09:00  09:30  10:00  10:30  11:00  11:30
 //
-// On each startup it inserts missing future slots using INSERT OR IGNORE so
-// admin-deleted slots stay deleted, and already-seeded slots are untouched.
+// On each startup — and then once a day via StartSeedLoop — it inserts missing
+// future slots using INSERT OR IGNORE so admin-deleted slots stay deleted,
+// already-seeded slots are untouched, and the bookable horizon keeps rolling
+// forward (always ~3 months ahead) without needing a restart.
 
 package scheduler
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
 	"time"
 )
 
-const WeeksAhead = 6
+// WeeksAhead is how far into the future default availability is seeded. 13 weeks
+// keeps roughly 3 months of slots open for booking at all times.
+const WeeksAhead = 13
 const locationName = "Europe/London"
 
 var defaultSchedule = []struct {
@@ -80,4 +85,25 @@ func SeedDefaultSlots(db *sql.DB) error {
 		log.Printf("scheduler: no new default slots needed")
 	}
 	return nil
+}
+
+// StartSeedLoop re-runs SeedDefaultSlots on an interval until the context is
+// cancelled, so the bookable horizon keeps rolling forward (~3 months ahead)
+// without a restart. SeedDefaultSlots is INSERT OR IGNORE, so this only ever
+// adds newly-in-range future slots and never resurrects admin-deleted ones.
+// Intended to be launched in a goroutine at startup. A daily interval is plenty
+// since new slots only come into range as calendar days pass.
+func StartSeedLoop(ctx context.Context, db *sql.DB, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := SeedDefaultSlots(db); err != nil {
+				log.Printf("ERROR periodic slot seeding: %v", err)
+			}
+		}
+	}
 }

@@ -91,6 +91,13 @@ func main() {
 	defer stopExpiry()
 	go scheduler.StartPendingExpiryLoop(expiryCtx, database, 5*time.Minute)
 
+	// ── Keep the bookable horizon ~3 months ahead ──────────────────────────────
+	// Seeding at startup only covers whatever "now" was at boot; re-seed daily so
+	// a long-running server always has roughly 3 months of future slots open.
+	seedCtx, stopSeed := context.WithCancel(context.Background())
+	defer stopSeed()
+	go scheduler.StartSeedLoop(seedCtx, database, 24*time.Hour)
+
 	// ── Public router ─────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
 

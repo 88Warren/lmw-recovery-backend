@@ -60,8 +60,12 @@ func SlotsHandler(db *sql.DB) http.HandlerFunc {
 			windowStart = date.UTC().Truncate(24 * time.Hour)
 			windowEnd = windowStart.Add(24 * time.Hour)
 		} else {
+			// No date filter: return the full seeded horizon (~3 months ahead,
+			// matching scheduler.WeeksAhead) so the booking calendar can page
+			// through every open week. A few days of slack past 13 weeks keeps
+			// the last seeded week fully visible.
 			windowStart = time.Now().UTC()
-			windowEnd = windowStart.Add(60 * 24 * time.Hour)
+			windowEnd = windowStart.Add(95 * 24 * time.Hour)
 		}
 
 		// Fetch all slots in the window
